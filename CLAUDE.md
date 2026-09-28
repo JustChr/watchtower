@@ -2,8 +2,9 @@
 
 Watchtower — watches GitHub repositories, has a **local** LLM (Ollama)
 summarise new activity, and reports it to a Telegram group (one topic per kind
-of work). Later phases draft triage replies and PR reviews, posted only after
-approval in Telegram. First watched repo: `JustChr/BavarianData`.
+of work). Phase 2 drafts replies to issues and discussions, posted by a GitHub
+App only after approval in Telegram; phase 3 adds PR reviews. First watched
+repo: `JustChr/BavarianData`.
 
 Runs as a Docker/Portainer stack on a separate Ubuntu box. This Windows machine
 is only for development: there is no Docker here, and the code can't be run
@@ -11,9 +12,15 @@ end-to-end locally.
 
 ## Layout
 
-- `watchtower/` — the package. Standard library only; keep it that way unless a
-  dependency clearly earns its place.
-  - `watcher.py` — poll loop; holds the GitHub **read-only** token.
+- `watchtower/` — the package. Standard library only, except `cryptography`
+  (RS256 for the GitHub App JWT); keep it that way unless a dependency clearly
+  earns its place.
+  - `watcher.py` — poll loop; holds the GitHub **read-only** token; refreshes a
+    thread and queues a draft when a stranger's item needs a reply.
+  - `drafter.py` — writes drafts with `agent_model`; **no secrets, no
+    internet** (only `watchtower-llm`). Logic in `drafts.py`.
+  - `poster.py` — the only GitHub writer: holds the App key (`github_app.py`),
+    applies draft decisions, posts exactly the approved version; no model.
   - `gateway.py` — the only Telegram client (a bot allows one `getUpdates`
     poller); holds the bot token; answers only the configured user in the
     configured group.
@@ -30,10 +37,12 @@ end-to-end locally.
     brief from the docs at the tag + release notes (no releases: from main,
     at most weekly); used as
     prompt context only after the user approves it via a Telegram button.
-  - Buttons: the gateway records presses as `decision` rows in the store;
-    the watcher applies them. `callback_data` is `kind:action:id`.
+  - Buttons: the gateway records presses — and replies to messages whose
+    outbox `ref` is `draft:<id>` (edits, reject reasons) — as `decision` rows;
+    the watcher (briefs) or the poster (drafts) applies them. `callback_data`
+    is `kind:action:id`.
   - `github.py`, `telegram.py`, `config.py`, `__main__.py`.
-- `compose.yaml`, `Dockerfile` — one image, two services.
+- `compose.yaml`, `Dockerfile` — one image, four services.
 - `config.example.toml` — template; the real `config.toml` lives only on the host.
 - `tests/` — pytest, no network.
 

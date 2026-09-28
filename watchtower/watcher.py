@@ -12,7 +12,7 @@ from . import brief, llm, render, snapshot
 from .config import DATA_DIR, Config, read_secret
 from .events import Event, Source, poll_repo
 from .github import GitHub, GitHubError, RateLimited
-from .history import History, sync_repo
+from .history import MAINTAINERS, History, sync_repo, sync_thread
 from .store import Store
 
 _LOGGER = logging.getLogger(__name__)
@@ -21,17 +21,65 @@ _LOGGER = logging.getLogger(__name__)
 ERROR_REPORT_INTERVAL = 3600
 
 
-def handle(event: Event, cfg: Config, store: Store, context: str = "") -> None:
+def wants_draft(event: Event, summary: llm.Summary | None, cfg: Config) -> bool:
+    """A stranger's issue, discussion or comment on one that the summary says needs a reply."""
+
+    return (
+        cfg.drafts
+        and summary is not None
+        and summary.needs_reply
+        and event.thread_kind is not None
+        and not event.is_bot
+        and event.association not in MAINTAINERS
+    )
+
+
+def queue_draft(event: Event, source: Source, history: History, store: Store) -> bool:
+    """Refresh the thread in the history (the drafter can't reach GitHub), then queue
+    a draft. Without a fresh thread there's no draft: it would answer an old state."""
+
+    try:
+        sync_thread(source, history, event.repo, event.number, event.thread_kind)
+    except Exception as err:  # noqa: BLE001 -- the event is still reported
+        _LOGGER.warning("%s: no draft, thread refresh failed: %s", event.key, err)
+        return False
+    store.add_draft(
+        event.key,
+        repo=event.repo,
+        number=event.number,
+        kind=event.thread_kind,
+        topic=event.topic,
+        title=event.title,
+        url=event.url,
+        reply_to=event.reply_to,
+    )
+    return True
+
+
+def handle(
+    event: Event,
+    cfg: Config,
+    store: Store,
+    context: str = "",
+    source: Source | None = None,
+    history: History | None = None,
+) -> None:
     # Bot activity (Dependabot, Actions) is reported silently and not summarised.
     summary = None if event.is_bot else llm.summarize(cfg, event.for_model(), context)
+    drafting = (
+        source is not None
+        and history is not None
+        and wants_draft(event, summary, cfg)
+        and queue_draft(event, source, history, store)
+    )
     store.enqueue(
         event.topic,
-        render.message(event, summary),
+        render.message(event, summary, drafting),
         url=event.url,
         silent=event.is_bot,
         seen_key=event.key,
     )
-    _LOGGER.info("queued %s", event.key)
+    _LOGGER.info("queued %s%s", event.key, " (drafting)" if drafting else "")
 
 
 def poll_once(
@@ -41,10 +89,12 @@ def poll_once(
     titles: dict[tuple[str, int], tuple[str, bool]],
     errors: dict[str, float],
     contexts: dict[str, str] | None = None,
+    history: History | None = None,
 ) -> float | None:
     """Poll every repo once. Returns the time to sleep until if rate limited.
 
     ``contexts`` maps a repo to background for its summaries (``brief.project_context``).
+    Without ``history`` no drafts are queued.
     """
 
     for repo in cfg.repos:
@@ -65,7 +115,7 @@ def poll_once(
         errors.pop(repo, None)
         for event in poll.events:
             if not store.is_seen(event.key):
-                handle(event, cfg, store, (contexts or {}).get(repo, ""))
+                handle(event, cfg, store, (contexts or {}).get(repo, ""), source, history)
         for name, value in poll.cursors.items():
             store.set_cursor(name, value)
     return None
@@ -161,7 +211,7 @@ def sync_code(
 
 
 def apply_decisions(store: Store, history: History) -> None:
-    for decision_id, action, ref in store.open_decisions("brief"):
+    for decision_id, action, ref, _ in store.open_decisions("brief"):
         history.decide_brief(ref, approved=action == "approve")
         store.mark_applied(decision_id)
 
@@ -196,7 +246,7 @@ def run(cfg: Config) -> None:
         started = time.time()
         apply_decisions(store, history)
         contexts = {repo: brief.project_context(history, repo, root) for repo in cfg.repos}
-        resume_at = poll_once(github, store, cfg, titles, errors, contexts)
+        resume_at = poll_once(github, store, cfg, titles, errors, contexts, history)
         history_due = cfg.history_minutes and started - synced >= cfg.history_minutes * 60
         if resume_at is None and history_due:
             synced = started

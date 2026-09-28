@@ -430,7 +430,7 @@ def test_press_records_confirms_and_removes_the_buttons(cfg, store):
             calls.append((method, params))
 
     gateway.press(FakeBot(), store, cfg, _press(-1001, 42, "brief:reject:5")["callback_query"])
-    assert store.open_decisions("brief") == [(1, "reject", 5)]
+    assert store.open_decisions("brief") == [(1, "reject", 5, None)]
     assert calls == [
         ("answerCallbackQuery", {"callback_query_id": "q1", "text": "Brief discarded"}),
         (

@@ -186,6 +186,12 @@ def trusted_docs(target: Path, budget: int = DOCS_BUDGET) -> list[tuple[str, str
     return docs
 
 
+def skill(target: Path, name: str, limit: int = MAX_DOC) -> str:
+    """The repo's own ``.claude/skills/<name>/SKILL.md``, or ``""``."""
+
+    return _read(target / ".claude" / "skills" / name / "SKILL.md", limit) or ""
+
+
 def tree(target: Path, limit: int = TREE_LIMIT) -> list[str]:
     """Relative file paths, sorted, without dependency and build folders."""
 

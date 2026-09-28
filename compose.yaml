@@ -1,6 +1,7 @@
-# Watchtower, phase 1: watcher + gateway. Deploy as a Portainer stack or with
+# Watchtower: watcher, gateway, drafter, poster. Deploy as a Portainer stack or with
 # `docker compose up -d`. Host prerequisites are in README.md.
 # The image is built by .github/workflows/image.yml; nothing is built on the host.
+# Each service holds only its own secret; the drafter holds none and has no internet.
 
 name: watchtower
 
@@ -44,11 +45,32 @@ services:
       interval: 60s
       start_period: 30s
 
+  drafter:
+    <<: *service
+    command: [drafter]
+    networks: [llm]           # internal: Ollama only, no internet, no secrets
+    healthcheck:              # a draft can take agent_timeout_seconds (900)
+      test: [CMD, python, -m, watchtower, health, drafter, "1200"]
+      interval: 60s
+      start_period: 30s
+
+  poster:
+    <<: *service
+    command: [poster]
+    secrets: [github_app_key]
+    networks: [egress]        # GitHub only; never talks to the model
+    healthcheck:
+      test: [CMD, python, -m, watchtower, health, poster, "120"]
+      interval: 60s
+      start_period: 30s
+
 secrets:
   github_read:
     file: /opt/watchtower/secrets/github_read
   telegram_token:
     file: /opt/watchtower/secrets/telegram_token
+  github_app_key:
+    file: /opt/watchtower/secrets/github_app_key
 
 networks:
   egress: {}

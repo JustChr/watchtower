@@ -12,6 +12,9 @@ poll_seconds = 120                # minimum 60
 ignore_authors = ["JustChr"]      # your own activity isn't reported
 backfill_hours = 0                # first start only: also report items this many hours old
 history_minutes = 60              # sync history (issues, PRs, discussions) + code snapshot; 0 = off
+# The GitHub App that posts replies you approved (its key: secrets/github_app_key).
+# Its App ID or Client ID, from the App's settings page; "" = nothing can be posted.
+app_id = ""
 
 [telegram]
 chat_id = -1001234567890          # the group (getUpdates: chat.id, starts with -100)
@@ -33,9 +36,10 @@ summary_model = "qwen3-coder:30b" # MoE, 3B active, ~19 GB
 num_ctx = 16384
 timeout_seconds = 180
 
-# Big: writes the repo brief (later: triage drafts, PR reviews). Reads up to
-# ~60k characters of docs + the file list, so it needs a large context.
+# Big: writes the repo brief and the reply drafts (later: PR reviews). Reads up
+# to ~60k characters of docs + the file list, so it needs a large context.
 agent_model = "gpt-oss:120b"      # MoE, 5B active, ~65 GB; fits next to the summary model in 128 GB
 agent_num_ctx = 32768
 agent_timeout_seconds = 900
 brief_betas = true                # a new beta release gets a new brief too; false = stable only
+draft_replies = true              # draft a reply when an issue/discussion (or a comment) needs one

@@ -4,7 +4,8 @@ Telegram lets exactly one process call ``getUpdates`` per bot, so every agent
 talks to Telegram through here: agents write to the outbox, the gateway sends.
 Incoming messages and button presses count only when they come from the
 configured user in the configured group; everything else is dropped without a
-reply. A press is only recorded here (``decision``); the watcher applies it.
+reply. A press, or a reply to a message that takes replies (a draft), is only
+recorded here (``decision``); the watcher (briefs) or the poster (drafts) applies it.
 """
 
 from __future__ import annotations
@@ -16,14 +17,22 @@ import time
 from . import render
 from .config import DATA_DIR, Config, read_secret
 from .store import Store
-from .telegram import Bot, TelegramError
+from .telegram import Bot, TelegramError, to_markdown
 
 _LOGGER = logging.getLogger(__name__)
 
 # Telegram allows about 20 messages a minute into one group.
 SEND_INTERVAL = 3.2
 # What each kind of button may do, with the confirmation shown on a press.
-BUTTON_ACTIONS = {"brief": {"approve": "Brief approved", "reject": "Brief discarded"}}
+BUTTON_ACTIONS = {
+    "brief": {"approve": "Brief approved", "reject": "Brief discarded"},
+    "draft": {
+        "post": "Posting…",
+        "reject": "Rejected. Reply to the draft with a reason if you like.",
+    },
+}
+# Messages whose replies count (their outbox ``ref`` is ``kind:id``).
+REPLY_KINDS = frozenset({"draft"})
 
 
 def authorized(update: dict, cfg: Config) -> dict | None:
@@ -81,6 +90,31 @@ def press(bot: Bot, store: Store, cfg: Config, query: dict) -> None:
         )
 
 
+def reply_target(store: Store, message: dict) -> tuple[str, int] | None:
+    """``(kind, id)`` if ``message`` replies to one of ours that takes replies."""
+
+    replied = (message.get("reply_to_message") or {}).get("message_id")
+    if not isinstance(replied, int):
+        return None
+    kind, _, ref = (store.ref_for_message(replied) or "").partition(":")
+    if kind not in REPLY_KINDS or not ref.isdigit():
+        return None
+    return kind, int(ref)
+
+
+def note_reply(store: Store, message: dict) -> bool:
+    """Record a reply to a draft (an edit, or a reason). Returns whether it was one."""
+
+    target = reply_target(store, message)
+    if target is None:
+        return False
+    kind, ref = target
+    text = to_markdown(message.get("text") or "", message.get("entities"))
+    if text.strip():
+        store.record_decision(kind, "reply", ref, text)
+    return True
+
+
 def command(message: dict) -> str | None:
     text = (message.get("text") or "").strip()
     if not text.startswith("/"):
@@ -118,7 +152,7 @@ def deliver(bot: Bot, store: Store, cfg: Config) -> bool:
     batch = store.pending()
     for item in batch:
         try:
-            bot.send(
+            sent = bot.send(
                 cfg.chat_id,
                 item.text,
                 thread_id=cfg.topics.get(item.topic),
@@ -134,7 +168,7 @@ def deliver(bot: Bot, store: Store, cfg: Config) -> bool:
             _LOGGER.warning("send %s failed: %s", item.id, err)
             store.mark_failed(item.id, str(err), permanent=err.permanent)
         else:
-            store.mark_sent(item.id)
+            store.mark_sent(item.id, (sent or {}).get("message_id"))
         time.sleep(SEND_INTERVAL)
     return bool(batch)
 
@@ -181,7 +215,7 @@ def run(cfg: Config) -> None:
                     _LOGGER.warning("button press: %s", err)
                 continue
             message = authorized(update, cfg)
-            if message is None:
+            if message is None or (command(message) is None and note_reply(store, message)):
                 continue
             match command(message):
                 case "/status":

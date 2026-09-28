@@ -3,7 +3,8 @@ name = "watchtower"
 version = "0.1.0"
 description = "Watch GitHub repos, summarise new activity with a local LLM, report to Telegram."
 requires-python = ">=3.14"
-dependencies = []  # standard library only, on purpose
+# Standard library only, on purpose -- except RS256 for the GitHub App's JWT (poster).
+dependencies = ["cryptography==50.0.1"]
 
 [tool.ruff]
 target-version = "py314"

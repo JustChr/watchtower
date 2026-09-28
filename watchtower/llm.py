@@ -62,8 +62,8 @@ def scrub(text: str) -> str:
     return _MENTION.sub("", _LINK.sub("[link]", _THINK.sub("", text)))
 
 
-def parse(content: str) -> Summary | None:
-    """The model's answer as a ``Summary``, or ``None`` if it isn't the agreed shape."""
+def json_object(content: str) -> dict | None:
+    """The JSON object in a model's answer (thinking removed), or ``None``."""
 
     content = _THINK.sub("", content)
     start, end = content.find("{"), content.rfind("}")
@@ -73,7 +73,14 @@ def parse(content: str) -> Summary | None:
         data = json.loads(content[start : end + 1])
     except ValueError:
         return None
-    if not isinstance(data, dict):
+    return data if isinstance(data, dict) else None
+
+
+def parse(content: str) -> Summary | None:
+    """The model's answer as a ``Summary``, or ``None`` if it isn't the agreed shape."""
+
+    data = json_object(content)
+    if data is None:
         return None
     kind = data.get("kind")
     text = data.get("summary")

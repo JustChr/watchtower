@@ -77,12 +77,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS comment_fts USING fts5(
 );
 """
 
-DISCUSSIONS_QUERY = """
-query($owner: String!, $name: String!, $after: String) {
-  repository(owner: $owner, name: $name) {
-    discussions(first: 25, after: $after, orderBy: {field: UPDATED_AT, direction: DESC}) {
-      pageInfo { hasNextPage endCursor }
-      nodes {
+_DISCUSSION_FIELDS = """
         number title url body createdAt updatedAt closed isAnswered
         category { name } author { login } authorAssociation
         comments(first: 100) {
@@ -93,11 +88,30 @@ query($owner: String!, $name: String!, $after: String) {
             }
           }
         }
-      }
+"""
+DISCUSSIONS_QUERY = (
+    """
+query($owner: String!, $name: String!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    discussions(first: 25, after: $after, orderBy: {field: UPDATED_AT, direction: DESC}) {
+      pageInfo { hasNextPage endCursor }
+      nodes { %s }
     }
   }
 }
 """
+    % _DISCUSSION_FIELDS
+)
+DISCUSSION_QUERY = (
+    """
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    discussion(number: $number) { %s }
+  }
+}
+"""
+    % _DISCUSSION_FIELDS
+)
 
 _WORD = re.compile(r"\w+")
 
@@ -423,6 +437,30 @@ def _sync_discussions(source: Source, history: History, repo: str) -> int:
             break
         after = info.get("endCursor")
     return saved
+
+
+def sync_thread(source: Source, history: History, repo: str, number: int, kind: str) -> None:
+    """Refresh one issue or discussion with all its comments right now, so a draft
+    sees the thread as it is and not as of the last full sync."""
+
+    if kind == "discussion":
+        owner, repo_name = repo.split("/")
+        variables = {"owner": owner, "name": repo_name, "number": number}
+        node = (source.graphql(DISCUSSION_QUERY, variables).get("repository") or {}).get(
+            "discussion"
+        )
+        if node:
+            with history.db:
+                history.db.execute("BEGIN")
+                _save_discussion(history, repo, node)
+        return
+    item = source.get_json(f"/repos/{repo}/issues/{number}")
+    comments = source.get_list(f"/repos/{repo}/issues/{number}/comments", per_page=100)
+    with history.db:
+        history.db.execute("BEGIN")
+        _save_issue(history, repo, item)
+        for comment in comments:
+            _save_issue_comment(history, repo, comment)
 
 
 def sync_repo(source: Source, history: History, repo: str) -> int:

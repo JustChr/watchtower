@@ -8,6 +8,47 @@ import urllib.request
 from typing import Any
 
 
+# Telegram formatting entity → Markdown around it. Clients turn typed **bold** or
+# `code` into entities and drop the marks, so a reply is put back together here.
+_MARKS = {
+    "bold": ("**", "**"),
+    "italic": ("_", "_"),
+    "strikethrough": ("~~", "~~"),
+    "code": ("`", "`"),
+}
+
+
+def to_markdown(text: str, entities: list[dict] | None) -> str:
+    """A message's text with its formatting as GitHub Markdown.
+
+    Entity offsets count UTF-16 code units, so the text is cut in that encoding.
+    """
+
+    inserts: list[tuple[int, int, int, str]] = []
+    for entity in entities or ():
+        start = entity["offset"]
+        end = start + entity["length"]
+        kind = entity.get("type")
+        if kind in _MARKS:
+            opening, closing = _MARKS[kind]
+        elif kind == "pre":
+            opening, closing = f"```{entity.get('language', '')}\n", "\n```"
+        elif kind == "text_link":
+            opening, closing = "[", f"]({entity.get('url', '')})"
+        else:
+            continue
+        # At one position: closings before openings; inner closes first, outer opens first.
+        inserts.append((start, 1, -end, opening))
+        inserts.append((end, 0, -start, closing))
+    units = text.encode("utf-16-le")
+    pieces, done = [], 0
+    for position, _, _, mark in sorted(inserts):
+        pieces += [units[done * 2 : position * 2].decode("utf-16-le"), mark]
+        done = position
+    pieces.append(units[done * 2 :].decode("utf-16-le"))
+    return "".join(pieces)
+
+
 class TelegramError(Exception):
     def __init__(self, code: int, description: str, retry_after: float | None = None) -> None:
         super().__init__(f"{code}: {description}")

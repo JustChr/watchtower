@@ -32,6 +32,14 @@ class Config:
     agent_num_ctx: int
     agent_timeout: float
     brief_betas: bool
+    draft_replies: bool
+    app_id: str  # the GitHub App that posts approved replies; "" = posting off
+
+    @property
+    def drafts(self) -> bool:
+        """Draft replies are on: asked for, and there's a model to write them."""
+
+        return self.draft_replies and bool(self.agent_model)
 
 
 def is_cloud_model(name: str) -> bool:
@@ -64,6 +72,10 @@ def parse(text: str) -> Config:
     if unknown:
         raise ValueError(f"unknown telegram.topics: {sorted(unknown)}")
 
+    app_id = str(github.get("app_id", "")).strip()
+    if app_id and not app_id.isalnum():
+        raise ValueError("github.app_id must be the App's ID or Client ID")
+
     # 0 turns the history off; otherwise it syncs at most every 10 minutes.
     history_minutes = int(github.get("history_minutes", 60))
     if history_minutes:
@@ -87,6 +99,8 @@ def parse(text: str) -> Config:
         agent_num_ctx=int(llm.get("agent_num_ctx", 32768)),
         agent_timeout=float(llm.get("agent_timeout_seconds", 900)),
         brief_betas=bool(llm.get("brief_betas", True)),
+        draft_replies=bool(llm.get("draft_replies", True)),
+        app_id=app_id,
     )
 
 

@@ -1,5 +1,6 @@
-"""Read-only GitHub client: REST with ETags (a 304 costs no rate limit), GraphQL for
-discussions, tarball downloads for the code snapshot."""
+"""GitHub client: REST with ETags (a 304 costs no rate limit), GraphQL for
+discussions, tarball downloads for the code snapshot. What it may do depends on
+the token: the watcher's can only read; the poster's (``github_app``) can comment."""
 
 from __future__ import annotations
 
@@ -18,13 +19,22 @@ _NEXT = re.compile(r'<([^>]+)>;\s*rel="next"')
 
 
 class GitHubError(Exception):
-    """A GitHub call failed. The message never contains the token."""
+    """A GitHub call failed. The message never contains the token.
+
+    ``definite``: GitHub answered with an error, so a write certainly didn't happen.
+    Otherwise (timeout, dropped connection) it may have.
+    """
+
+    def __init__(self, message: str, *, definite: bool = False) -> None:
+        super().__init__(message)
+        self.definite = definite
 
 
 class RateLimited(GitHubError):
     def __init__(self, reset_at: float) -> None:
         super().__init__(
-            f"rate limited until {time.strftime('%H:%M:%S', time.gmtime(reset_at))} UTC"
+            f"rate limited until {time.strftime('%H:%M:%S', time.gmtime(reset_at))} UTC",
+            definite=True,
         )
         self.reset_at = reset_at
 
@@ -68,7 +78,11 @@ class GitHub:
                     raise RateLimited(time.time() + float(lowered["retry-after"])) from None
                 reset = float(lowered.get("x-ratelimit-reset") or time.time() + 60)
                 raise RateLimited(reset) from None
-            raise GitHubError(f"HTTP {err.code} {err.reason} for {where}") from None
+            # A 5xx can come after the write went through; a 4xx means it was refused.
+            definite = 400 <= err.code < 500
+            raise GitHubError(
+                f"HTTP {err.code} {err.reason} for {where}", definite=definite
+            ) from None
         except (urllib.error.URLError, OSError, ValueError) as err:
             raise GitHubError(f"{type(err).__name__} for {where}") from None
 
@@ -92,6 +106,10 @@ class GitHub:
 
     def get_json(self, path: str) -> Any:
         _, _, data = self._request(f"{API}{path}")
+        return data
+
+    def post_json(self, path: str, body: dict) -> Any:
+        _, _, data = self._request(f"{API}{path}", body=body)
         return data
 
     def download(self, path: str, dest: Path, max_bytes: int) -> None:
@@ -119,5 +137,5 @@ class GitHub:
         _, _, data = self._request(f"{API}/graphql", body={"query": query, "variables": variables})
         if data.get("errors"):
             messages = "; ".join(e.get("message", "?") for e in data["errors"])
-            raise GitHubError(f"GraphQL: {messages}")
+            raise GitHubError(f"GraphQL: {messages}", definite=True)
         return data["data"]

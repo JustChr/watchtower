@@ -7,6 +7,7 @@ from html import escape
 
 from .events import Event
 from .llm import Summary
+from .store import Draft, Version
 
 HEADINGS = {
     "issue": "🆕 Issue",
@@ -39,7 +40,7 @@ def snippet(body: str) -> str:
     return text
 
 
-def message(event: Event, summary: Summary | None) -> str:
+def message(event: Event, summary: Summary | None, drafting: bool = False) -> str:
     repo = event.repo.split("/", 1)[1]
     lines = [
         f"<b>{HEADINGS[event.kind]} #{event.number}</b> · {escape(repo)}",
@@ -48,7 +49,9 @@ def message(event: Event, summary: Summary | None) -> str:
     ]
     if summary is not None:
         label = KIND_LABELS[summary.kind]
-        if summary.needs_reply:
+        if drafting:
+            label += " · ✍️ drafting a reply…"
+        elif summary.needs_reply:
             label += " · ✍️ needs a reply"
         lines += [label, f"🤖 <i>{escape(summary.text)}</i>"]
     elif text := snippet(event.body):
@@ -74,6 +77,30 @@ def fit(text: str, limit: int) -> str:
         pieces.append(piece)
         size += len(piece)
     return "".join(pieces) + "…"
+
+
+def draft(d: Draft, version: Version, error: str = "") -> str:
+    """A draft up for approval. The text is shown in full -- it is exactly what gets
+    posted -- so callers keep it within ``drafts.MAX_SHOWN``."""
+
+    repo = d.repo.split("/", 1)[1]
+    head = f"<b>✍️ Draft reply #{d.number}</b> · {escape(repo)}"
+    if version.author == "user":
+        head += f" · v{version.number}, your edit"
+    lines = [head, fit(d.title, 200)]
+    if error:
+        lines.append(f"⚠️ {fit(error, 300)}")
+    if version.author == "model" and d.note:
+        lines.append(f"🤖 <i>{fit(d.note, 300)}</i>")
+    lines += [
+        f"<pre>{escape(version.text)}</pre>",
+        "<i>To change it, reply to this message with your version.</i>",
+    ]
+    return "\n".join(lines)
+
+
+def posted(d: Draft) -> str:
+    return f"✅ <b>Posted</b> the reply to #{d.number} · {escape(d.repo.split('/', 1)[1])}"
 
 
 def brief(repo: str, label: str, text: str) -> str:

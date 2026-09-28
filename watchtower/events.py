@@ -26,11 +26,13 @@ query($owner: String!, $name: String!) {
   repository(owner: $owner, name: $name) {
     discussions(first: 15, orderBy: {field: UPDATED_AT, direction: DESC}) {
       nodes {
-        number title url createdAt body author { login }
+        number title url createdAt body author { login } authorAssociation
         comments(last: 20) {
           nodes {
-            id url createdAt body author { login }
-            replies(last: 10) { nodes { id url createdAt body author { login } } }
+            id url createdAt body author { login } authorAssociation
+            replies(last: 10) {
+              nodes { id url createdAt body author { login } authorAssociation }
+            }
           }
         }
       }
@@ -42,6 +44,7 @@ query($owner: String!, $name: String!) {
 
 class Source(Protocol):
     def get_list(self, path: str, **params: object) -> list[dict]: ...
+    def get_json(self, path: str) -> object: ...
     def graphql(self, query: str, variables: dict) -> dict: ...
 
 
@@ -56,10 +59,23 @@ class Event:
     author: str
     body: str
     url: str
+    association: str = "NONE"  # GitHub's author_association: OWNER, MEMBER, ...
+    reply_to: str = ""  # discussions: the top-level comment a reply goes under
 
     @property
     def is_bot(self) -> bool:
         return self.author.endswith("[bot]")
+
+    @property
+    def thread_kind(self) -> str | None:
+        """Where a reply to this goes: ``issue`` or ``discussion`` (``None``: PRs)."""
+
+        return {
+            "issue": "issue",
+            "issue_comment": "issue",
+            "discussion": "discussion",
+            "discussion_comment": "discussion",
+        }.get(self.kind)
 
     def for_model(self) -> dict[str, str]:
         return {
@@ -139,6 +155,7 @@ def poll_repo(
                 author=_login(item.get("user")),
                 body=item.get("body") or "",
                 url=item["html_url"],
+                association=item.get("author_association") or "NONE",
             )
         )
     if newest != since:
@@ -171,6 +188,7 @@ def poll_repo(
                 author=_login(comment.get("user")),
                 body=comment.get("body") or "",
                 url=comment["html_url"],
+                association=comment.get("author_association") or "NONE",
             )
         )
     if newest != since:
@@ -197,6 +215,7 @@ def poll_repo(
                         author=_login(discussion.get("author")),
                         body=discussion.get("body") or "",
                         url=discussion["url"],
+                        association=discussion.get("authorAssociation") or "NONE",
                     ),
                 )
             )
@@ -218,6 +237,9 @@ def poll_repo(
                             author=_login(node.get("author")),
                             body=node.get("body") or "",
                             url=node["url"],
+                            association=node.get("authorAssociation") or "NONE",
+                            # A reply goes under the same top-level comment.
+                            reply_to=comment["id"],
                         ),
                     )
                 )

@@ -1,4 +1,5 @@
-"""Entry point: ``python -m watchtower watcher|gateway|health <name> <max-age-seconds>|history ...``."""
+"""Entry point: ``python -m watchtower watcher|gateway|drafter|poster``, or
+``health <name> <max-age-seconds>``, or ``history ...``."""
 
 from __future__ import annotations
 
@@ -76,6 +77,14 @@ def main(argv: list[str]) -> int:
             from . import gateway
 
             gateway.run(config.load())
+        case ["drafter"]:
+            from . import drafter
+
+            drafter.run(config.load())
+        case ["poster"]:
+            from . import poster
+
+            poster.run(config.load())
         case ["health", name, max_age]:
             return health(name, float(max_age))
         case ["history", *rest]:
