@@ -59,11 +59,15 @@ GitHub ─poll─> watcher ──outbox (SQLite)──> gateway ──> Telegram
 
 ## Deploy
 
-**Portainer:** Stacks → Add stack → *Repository* → this repo's URL (plus
-credentials if it's private), reference `refs/heads/main`, compose path
-`compose.yaml` → Deploy.
+Every push to `main` runs the tests, then GitHub Actions builds the image and
+publishes `ghcr.io/justchr/watchtower:latest`. The host only pulls it (Portainer's
+bundled compose can't run `build:`).
 
-**CLI:** copy or clone this folder to the host, then `docker compose up -d --build`.
+**Portainer:** Stacks → Add stack → *Repository* → this repo's URL, reference
+`refs/heads/main`, compose path `compose.yaml` → Deploy. With GitOps updates on,
+a push redeploys by itself; otherwise *Pull and redeploy*.
+
+**CLI:** copy or clone this folder to the host, then `docker compose up -d`.
 
 Both containers should turn *healthy* within a minute and post "online" into ⚙️ System.
 Send `/status` or `/ping` in the group to check the gateway.
