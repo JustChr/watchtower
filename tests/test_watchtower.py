@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from watchtower import config, gateway, llm, render, watcher
@@ -69,6 +71,12 @@ def test_config_refuses_cloud_models(model):
     text = f'[github]\nrepos=["a/b"]\n[telegram]\nchat_id=1\nallowed_user_id=2\n[llm]\nsummary_model="{model}"'
     with pytest.raises(ValueError, match="cloud"):
         config.parse(text)
+
+
+def test_the_example_config_parses():
+    example = config.load(Path(__file__).resolve().parents[1] / "config.example.toml")
+    assert example.repos == ("JustChr/BavarianData", "JustChr/watchtower")
+    assert example.agent_model and example.summary_model
 
 
 def test_config_requires_telegram_ids():
@@ -146,7 +154,7 @@ def test_discussions_comments_and_replies(cfg, store):
 
 
 def test_poll_once_reports_each_event_exactly_once(cfg, store, monkeypatch):
-    monkeypatch.setattr(llm, "summarize", lambda cfg, item: None)
+    monkeypatch.setattr(llm, "summarize", lambda cfg, item, context="": None)
     gh = FakeGitHub()
     store.set_cursor("baseline:owner/repo", iso(NOW))
     gh.issues = [issue(1, AFTER)]
@@ -168,7 +176,7 @@ def test_a_failing_repo_is_reported_once_and_does_not_crash(cfg, store):
 
 
 def test_bot_activity_is_silent_and_not_summarised(cfg, store, monkeypatch):
-    def fail(cfg, item):
+    def fail(cfg, item, context=""):
         raise AssertionError("bots must not reach the model")
 
     monkeypatch.setattr(llm, "summarize", fail)
@@ -256,7 +264,7 @@ def test_deliver_marks_permanent_failures_and_routes_topics(cfg, store, monkeypa
     sent = []
 
     class FakeBot:
-        def send(self, chat_id, text, *, thread_id=None, url=None, silent=False):
+        def send(self, chat_id, text, *, thread_id=None, url=None, silent=False, buttons=()):
             if text == "bad":
                 raise TelegramError(400, "Bad Request: message thread not found")
             sent.append((chat_id, thread_id, text))

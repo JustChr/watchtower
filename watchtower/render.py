@@ -58,3 +58,29 @@ def message(event: Event, summary: Summary | None) -> str:
 
 def system(text: str) -> str:
     return f"⚙️ {escape(text)}"
+
+
+def fit(text: str, limit: int) -> str:
+    """``text`` escaped, shortened so the escaped form stays within ``limit`` characters."""
+
+    escaped = escape(text)
+    if len(escaped) <= limit:
+        return escaped
+    pieces, size = [], 0
+    for char in text:
+        piece = escape(char)
+        if size + len(piece) > limit - 1:
+            break
+        pieces.append(piece)
+        size += len(piece)
+    return "".join(pieces) + "…"
+
+
+def brief(repo: str, label: str, text: str) -> str:
+    """A repo brief up for approval. Telegram allows 4096 characters per message."""
+
+    return (
+        f"<b>📘 Repo brief</b> · {escape(repo)} · {fit(label, 80)}\n"
+        "<i>Written by the local model from the repo's docs. Approve it to use it as"
+        " background for summaries and drafts.</i>\n\n" + fit(text, 3600)
+    )

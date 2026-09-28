@@ -58,6 +58,7 @@ class Bot:
         thread_id: int | None = None,
         url: str | None = None,
         silent: bool = False,
+        buttons: tuple[tuple[str, str], ...] = (),
     ) -> Any:
         params: dict[str, Any] = {
             "chat_id": chat_id,
@@ -68,6 +69,11 @@ class Bot:
         }
         if thread_id:
             params["message_thread_id"] = thread_id
+        rows = []
+        if buttons:
+            rows.append([{"text": label, "callback_data": data} for label, data in buttons])
         if url and url.startswith("https://github.com/"):
-            params["reply_markup"] = {"inline_keyboard": [[{"text": "Open on GitHub", "url": url}]]}
+            rows.append([{"text": "Open on GitHub", "url": url}])
+        if rows:
+            params["reply_markup"] = {"inline_keyboard": rows}
         return self.call("sendMessage", params)

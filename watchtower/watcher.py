@@ -1,14 +1,18 @@
-"""The watcher process: poll GitHub, summarise, queue. Holds the read-only GitHub token."""
+"""The watcher process: poll GitHub, summarise, queue; keep each repo's history, code
+snapshot and brief current. Holds the read-only GitHub token."""
 
 from __future__ import annotations
 
 import logging
+import shutil
 import time
+from pathlib import Path
 
-from . import llm, render
+from . import brief, llm, render, snapshot
 from .config import DATA_DIR, Config, read_secret
 from .events import Event, Source, poll_repo
 from .github import GitHub, GitHubError, RateLimited
+from .history import History, sync_repo
 from .store import Store
 
 _LOGGER = logging.getLogger(__name__)
@@ -17,9 +21,9 @@ _LOGGER = logging.getLogger(__name__)
 ERROR_REPORT_INTERVAL = 3600
 
 
-def handle(event: Event, cfg: Config, store: Store) -> None:
+def handle(event: Event, cfg: Config, store: Store, context: str = "") -> None:
     # Bot activity (Dependabot, Actions) is reported silently and not summarised.
-    summary = None if event.is_bot else llm.summarize(cfg, event.for_model())
+    summary = None if event.is_bot else llm.summarize(cfg, event.for_model(), context)
     store.enqueue(
         event.topic,
         render.message(event, summary),
@@ -36,8 +40,12 @@ def poll_once(
     cfg: Config,
     titles: dict[tuple[str, int], tuple[str, bool]],
     errors: dict[str, float],
+    contexts: dict[str, str] | None = None,
 ) -> float | None:
-    """Poll every repo once. Returns the time to sleep until if rate limited."""
+    """Poll every repo once. Returns the time to sleep until if rate limited.
+
+    ``contexts`` maps a repo to background for its summaries (``brief.project_context``).
+    """
 
     for repo in cfg.repos:
         try:
@@ -57,10 +65,105 @@ def poll_once(
         errors.pop(repo, None)
         for event in poll.events:
             if not store.is_seen(event.key):
-                handle(event, cfg, store)
+                handle(event, cfg, store, (contexts or {}).get(repo, ""))
         for name, value in poll.cursors.items():
             store.set_cursor(name, value)
     return None
+
+
+def _failed(label: str, err: Exception, store: Store, errors: dict[str, float]) -> None:
+    """Log a failed step; report it to Telegram at most once per ``ERROR_REPORT_INTERVAL``."""
+
+    if isinstance(err, RateLimited):
+        _LOGGER.warning("%s: %s", label, err)
+        return
+    if isinstance(err, GitHubError):
+        _LOGGER.warning("%s: %s", label, err)
+    else:
+        _LOGGER.error("%s: unexpected error", label, exc_info=err)
+    if time.time() - errors.get(label, 0) > ERROR_REPORT_INTERVAL:
+        errors[label] = time.time()
+        store.enqueue("system", render.system(f"{label}: {type(err).__name__}: {err}"))
+
+
+def sync_history(
+    source: Source, history: History, store: Store, cfg: Config, errors: dict[str, float]
+) -> None:
+    """Bring every repo's searchable history up to date; failures never stop the polling."""
+
+    for repo in cfg.repos:
+        was_empty = not any(history.counts(repo).values())
+        try:
+            written = sync_repo(source, history, repo)
+        except Exception as err:  # noqa: BLE001
+            _failed(f"History {repo}", err, store, errors)
+            continue
+        _LOGGER.info("history %s: %d record(s) written", repo, written)
+        counts = history.counts(repo)
+        if was_empty and any(counts.values()):
+            store.enqueue(
+                "system",
+                render.system(
+                    f"History of {repo} loaded: {counts['issue']} issues, {counts['pr']} PRs,"
+                    f" {counts['discussion']} discussions, {counts['comment']} comments."
+                ),
+            )
+
+
+def sync_code(
+    source: snapshot.Source,
+    history: History,
+    store: Store,
+    cfg: Config,
+    errors: dict[str, float],
+    root: Path,
+) -> None:
+    """Refresh each repo's code snapshot and, on a new release, put a new brief up for approval."""
+
+    for repo in cfg.repos:
+        try:
+            commit = snapshot.sync(source, history, repo, root)
+        except Exception as err:  # noqa: BLE001
+            _failed(f"Snapshot {repo}", err, store, errors)
+            continue
+        if not cfg.agent_model:
+            continue
+        release_copy = snapshot.path_for(root / ".release", repo)
+        try:
+            releases = snapshot.releases(source, repo)
+            target = brief.plan(releases, commit, cfg.brief_betas)
+            if not brief.due(history, repo, target, time.time()):
+                continue
+            store.beat("watcher", f"writing the brief for {repo}")  # can take minutes
+            if target.release is None:
+                text = brief.generate(cfg, repo, snapshot.path_for(root, repo))
+            else:
+                snapshot.fetch(source, repo, target.ref, release_copy)
+                text = brief.generate(cfg, repo, release_copy, target.release, releases)
+        except Exception as err:  # noqa: BLE001
+            _failed(f"Brief {repo}", err, store, errors)
+            continue
+        finally:
+            shutil.rmtree(release_copy, ignore_errors=True)
+        brief_id = history.add_brief(repo, target.ref, target.label, text)
+        if text is None:
+            text = f"Brief for {repo} {target.label} failed; retrying in a day."
+            store.enqueue("system", render.system(text))
+            continue
+        store.enqueue(
+            "system",
+            render.brief(repo, target.label, text),
+            buttons=[
+                ("✅ Use it", f"brief:approve:{brief_id}"),
+                ("🗑 Discard", f"brief:reject:{brief_id}"),
+            ],
+        )
+
+
+def apply_decisions(store: Store, history: History) -> None:
+    for decision_id, action, ref in store.open_decisions("brief"):
+        history.decide_brief(ref, approved=action == "approve")
+        store.mark_applied(decision_id)
 
 
 def _check_model(cfg: Config) -> str:
@@ -84,11 +187,21 @@ def run(cfg: Config) -> None:
     _LOGGER.info("watcher started: %s", status)
     store.enqueue("system", render.system(f"Watcher online: {', '.join(cfg.repos)}; {status}."))
 
+    history = History(DATA_DIR / "history.db")
+    root = DATA_DIR / "repos"
     titles: dict[tuple[str, int], tuple[str, bool]] = {}
     errors: dict[str, float] = {}
+    synced = 0.0
     while True:
         started = time.time()
-        resume_at = poll_once(github, store, cfg, titles, errors)
+        apply_decisions(store, history)
+        contexts = {repo: brief.project_context(history, repo, root) for repo in cfg.repos}
+        resume_at = poll_once(github, store, cfg, titles, errors, contexts)
+        history_due = cfg.history_minutes and started - synced >= cfg.history_minutes * 60
+        if resume_at is None and history_due:
+            synced = started
+            sync_history(github, history, store, cfg, errors)
+            sync_code(github, history, store, cfg, errors, root)
         store.beat("watcher", f"polled {len(cfg.repos)} repo(s)")
         if resume_at is not None:
             time.sleep(max(cfg.poll_seconds, resume_at - time.time() + 5))

@@ -1,4 +1,5 @@
-"""Read-only GitHub client: REST with ETags (a 304 costs no rate limit), GraphQL for discussions."""
+"""Read-only GitHub client: REST with ETags (a 304 costs no rate limit), GraphQL for
+discussions, tarball downloads for the code snapshot."""
 
 from __future__ import annotations
 
@@ -8,6 +9,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Any
 
 API = "https://api.github.com"
@@ -33,15 +35,18 @@ class GitHub:
         self._timeout = timeout
         self._etags: dict[str, str] = {}
 
-    def _request(
-        self, url: str, *, body: dict | None = None, etag: str | None = None
-    ) -> tuple[int, dict[str, str], Any]:
-        headers = {
+    def _headers(self) -> dict[str, str]:
+        return {
             "Authorization": f"Bearer {self._token}",
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
             "User-Agent": "watchtower",
         }
+
+    def _request(
+        self, url: str, *, body: dict | None = None, etag: str | None = None
+    ) -> tuple[int, dict[str, str], Any]:
+        headers = self._headers()
         if etag:
             headers["If-None-Match"] = etag
         data = None
@@ -84,6 +89,31 @@ class GitHub:
             _, headers, data = self._request(match.group(1))
             items.extend(data)
         return items
+
+    def get_json(self, path: str) -> Any:
+        _, _, data = self._request(f"{API}{path}")
+        return data
+
+    def download(self, path: str, dest: Path, max_bytes: int) -> None:
+        """Stream a file (e.g. a tarball; GitHub redirects to codeload) to ``dest``."""
+
+        request = urllib.request.Request(f"{API}{path}", headers=self._headers())
+        where = urllib.parse.urlsplit(request.full_url).path
+        try:
+            with (
+                urllib.request.urlopen(request, timeout=self._timeout) as response,
+                dest.open("wb") as out,
+            ):
+                size = 0
+                while chunk := response.read(1 << 16):
+                    size += len(chunk)
+                    if size > max_bytes:
+                        raise GitHubError(f"download over {max_bytes} bytes for {where}")
+                    out.write(chunk)
+        except urllib.error.HTTPError as err:
+            raise GitHubError(f"HTTP {err.code} {err.reason} for {where}") from None
+        except (urllib.error.URLError, OSError) as err:
+            raise GitHubError(f"{type(err).__name__} for {where}") from None
 
     def graphql(self, query: str, variables: dict[str, Any]) -> dict:
         _, _, data = self._request(f"{API}/graphql", body={"query": query, "variables": variables})

@@ -35,6 +35,30 @@ GitHub ─poll─> watcher ──outbox (SQLite)──> gateway ──> Telegram
 - Containers: non-root, read-only root filesystem, no capabilities, memory and
   PID limits, no Docker socket.
 
+## What the agents learn a repo from
+
+Every `history_minutes` the watcher refreshes, per repo:
+
+| Source | Where | Trust |
+|---|---|---|
+| **History:** every issue, PR, discussion and comment, full-text searchable | `/data/history.db` | Strangers' text: data only. GitHub's `author_association` marks what maintainers wrote. |
+| **Code snapshot:** the default branch, downloaded as a tarball when its head commit changes | `/data/repos/<owner>/<name>` | What the maintainers merged. Unpacked safely: size and file-count limits, nothing outside the folder, no links pointing out. |
+| **Repo docs:** `CLAUDE.md`/`AGENTS.md`, README, CONTRIBUTING, `.claude/skills/*/SKILL.md`, `docs/**/*.md` | from the snapshot | The maintainers' own words. |
+| **Repo brief:** what the project is, current stable and beta, architecture, what it supports, common problems, how issues are handled. `agent_model` writes it from the docs at the release's tag, its release notes, the recent releases and the file tree | `/data/history.db` | Model output: used **only after you approve it** in ⚙️ System (✅ Use it / 🗑 Discard). |
+
+Summaries get the approved brief as background. Until one is approved, they
+get the README's opening. **Each new release gets a new brief**: betas too,
+unless `brief_betas = false`. A repo without releases gets its brief from the
+default branch instead, renewed at most weekly while the branch keeps moving.
+
+Check it from the host:
+```bash
+sudo docker exec watchtower-watcher-1 python -m watchtower history JustChr/BavarianData
+sudo docker exec watchtower-watcher-1 python -m watchtower history search JustChr/BavarianData soc stuck
+sudo docker exec watchtower-watcher-1 python -m watchtower history show JustChr/BavarianData 42
+ls /opt/watchtower/data/repos/JustChr/BavarianData
+```
+
 ## Host setup (once)
 
 1. **Secrets**, readable only by the container user (UID 10001):
@@ -52,8 +76,8 @@ GitHub ─poll─> watcher ──outbox (SQLite)──> gateway ──> Telegram
    sudo install -d -o 10001 -g 10001 -m 700 /opt/watchtower/data
    ```
 3. **Config:** copy `config.example.toml` to `/opt/watchtower/config.toml`
-   and fill in the group ID, your user ID, the topic IDs and a model from
-   `docker exec ollama ollama list`.
+   and fill in the group ID, your user ID, the topic IDs and the two models
+   (`summary_model`, `agent_model`) from `docker exec ollama ollama list`.
 4. **Ollama network:** `docker network create --internal watchtower-llm`, and
    add `watchtower-llm` to the Ollama service's `networks:` (keeping `default`).
 

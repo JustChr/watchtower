@@ -2,10 +2,16 @@
 # The IDs aren't secrets, but they are yours: keep the real file out of git.
 
 [github]
-repos = ["JustChr/BavarianData"]
+# "owner/name", one per line. The read token (secrets/github_read) must cover
+# every repo listed: fine-grained PAT → Repository access → Only select repositories.
+repos = [
+    "JustChr/BavarianData",
+    "JustChr/watchtower",
+]
 poll_seconds = 120                # minimum 60
 ignore_authors = ["JustChr"]      # your own activity isn't reported
 backfill_hours = 0                # first start only: also report items this many hours old
+history_minutes = 60              # sync history (issues, PRs, discussions) + code snapshot; 0 = off
 
 [telegram]
 chat_id = -1001234567890          # the group (getUpdates: chat.id, starts with -100)
@@ -18,7 +24,18 @@ replies = 0                       # discussions
 system = 0                        # startup, errors, /status
 
 [llm]
+# Both models must appear in `docker exec ollama ollama list`; "" turns that job off.
+# Local models only (no *-cloud: prompts would leave the box).
 url = "http://ollama:11434"       # the ollama container, over the watchtower-llm network
-summary_model = "qwen3-coder:30b" # must appear in `ollama list`; "" turns summaries off
+
+# Small and fast: one-line summaries of every new issue, PR, comment.
+summary_model = "qwen3-coder:30b" # MoE, 3B active, ~19 GB
 num_ctx = 16384
 timeout_seconds = 180
+
+# Big: writes the repo brief (later: triage drafts, PR reviews). Reads up to
+# ~60k characters of docs + the file list, so it needs a large context.
+agent_model = "gpt-oss:120b"      # MoE, 5B active, ~65 GB; fits next to the summary model in 128 GB
+agent_num_ctx = 32768
+agent_timeout_seconds = 900
+brief_betas = true                # a new beta release gets a new brief too; false = stable only

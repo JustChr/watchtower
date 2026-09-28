@@ -56,6 +56,12 @@ class Summary:
     needs_reply: bool
 
 
+def scrub(text: str) -> str:
+    """Model output without its thinking, links or @mentions."""
+
+    return _MENTION.sub("", _LINK.sub("[link]", _THINK.sub("", text)))
+
+
 def parse(content: str) -> Summary | None:
     """The model's answer as a ``Summary``, or ``None`` if it isn't the agreed shape."""
 
@@ -73,7 +79,7 @@ def parse(content: str) -> Summary | None:
     text = data.get("summary")
     if kind not in KINDS or not isinstance(text, str):
         return None
-    text = _MENTION.sub("", _LINK.sub("[link]", " ".join(text.split())))
+    text = scrub(" ".join(text.split()))
     if not text:
         return None
     if len(text) > MAX_SUMMARY:
@@ -81,33 +87,61 @@ def parse(content: str) -> Summary | None:
     return Summary(kind, text, data.get("needs_reply") is True)
 
 
-def _post(cfg: Config, path: str, payload: dict[str, Any]) -> dict:
+def _post(cfg: Config, path: str, payload: dict[str, Any], timeout: float) -> dict:
     request = urllib.request.Request(
         f"{cfg.llm_url}{path}",
         data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(request, timeout=cfg.llm_timeout) as response:
+    with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.load(response)
 
 
-def summarize(cfg: Config, item: dict[str, str]) -> Summary | None:
+def chat(
+    cfg: Config,
+    model: str,
+    system: str,
+    user: str,
+    *,
+    num_ctx: int,
+    timeout: float,
+    schema: dict | None = None,
+) -> str:
+    """One non-streaming chat turn; the raw (untrusted) answer text."""
+
+    payload: dict[str, Any] = {
+        "model": model,
+        "stream": False,
+        "options": {"temperature": 0.2, "num_ctx": num_ctx},
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+    }
+    if schema is not None:
+        payload["format"] = schema
+    return _post(cfg, "/api/chat", payload, timeout)["message"]["content"]
+
+
+def summarize(cfg: Config, item: dict[str, str], context: str = "") -> Summary | None:
+    """``context`` is background on the project from a trusted source (see ``brief``)."""
+
     if not cfg.summary_model:
         return None
     item = {**item, "body": item.get("body", "")[:MAX_BODY]}
-    payload = {
-        "model": cfg.summary_model,
-        "stream": False,
-        "format": SCHEMA,
-        "options": {"temperature": 0.2, "num_ctx": cfg.num_ctx},
-        "messages": [
-            {"role": "system", "content": SYSTEM},
-            {"role": "user", "content": json.dumps(item, ensure_ascii=False)},
-        ],
-    }
+    system = SYSTEM
+    if context:
+        system += f"\n\nAbout the project, from its maintainers (background only):\n{context}"
     try:
-        answer = _post(cfg, "/api/chat", payload)
-        content = answer["message"]["content"]
+        content = chat(
+            cfg,
+            cfg.summary_model,
+            system,
+            json.dumps(item, ensure_ascii=False),
+            num_ctx=cfg.num_ctx,
+            timeout=cfg.llm_timeout,
+            schema=SCHEMA,
+        )
     except Exception as err:  # noqa: BLE001 -- any failure just means "no summary"
         _LOGGER.warning("summary failed: %s", type(err).__name__)
         return None

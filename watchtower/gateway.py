@@ -2,8 +2,9 @@
 
 Telegram lets exactly one process call ``getUpdates`` per bot, so every agent
 talks to Telegram through here: agents write to the outbox, the gateway sends.
-Incoming messages are answered only when they come from the configured user
-in the configured group; everything else is dropped without a reply.
+Incoming messages and button presses count only when they come from the
+configured user in the configured group; everything else is dropped without a
+reply. A press is only recorded here (``decision``); the watcher applies it.
 """
 
 from __future__ import annotations
@@ -21,6 +22,8 @@ _LOGGER = logging.getLogger(__name__)
 
 # Telegram allows about 20 messages a minute into one group.
 SEND_INTERVAL = 3.2
+# What each kind of button may do, with the confirmation shown on a press.
+BUTTON_ACTIONS = {"brief": {"approve": "Brief approved", "reject": "Brief discarded"}}
 
 
 def authorized(update: dict, cfg: Config) -> dict | None:
@@ -32,6 +35,50 @@ def authorized(update: dict, cfg: Config) -> dict | None:
     if (message.get("from") or {}).get("id") != cfg.allowed_user_id:
         return None
     return message
+
+
+def authorized_press(update: dict, cfg: Config) -> dict | None:
+    """The update's button press if it's the allowed user's, on a message in the group."""
+
+    query = update.get("callback_query") or {}
+    if (query.get("from") or {}).get("id") != cfg.allowed_user_id:
+        return None
+    if ((query.get("message") or {}).get("chat") or {}).get("id") != cfg.chat_id:
+        return None
+    return query
+
+
+def parse_press(data: str | None) -> tuple[str, str, int] | None:
+    """``kind:action:ref`` as sent by our own buttons, or ``None`` for anything else."""
+
+    parts = (data or "").split(":")
+    if len(parts) != 3 or not parts[2].isdigit():
+        return None
+    kind, action, ref = parts
+    if action not in BUTTON_ACTIONS.get(kind, ()):
+        return None
+    return kind, action, int(ref)
+
+
+def press(bot: Bot, store: Store, cfg: Config, query: dict) -> None:
+    """Record the decision first (it counts even if Telegram fails next), then confirm
+    and remove the buttons so it can't be pressed twice."""
+
+    parsed = parse_press(query.get("data"))
+    answer = {"callback_query_id": query["id"]}
+    if parsed is not None:
+        store.record_decision(*parsed)
+        answer["text"] = BUTTON_ACTIONS[parsed[0]][parsed[1]]
+    bot.call("answerCallbackQuery", answer)
+    if parsed is not None:
+        bot.call(
+            "editMessageReplyMarkup",
+            {
+                "chat_id": cfg.chat_id,
+                "message_id": query["message"]["message_id"],
+                "reply_markup": {"inline_keyboard": []},
+            },
+        )
 
 
 def command(message: dict) -> str | None:
@@ -77,6 +124,7 @@ def deliver(bot: Bot, store: Store, cfg: Config) -> bool:
                 thread_id=cfg.topics.get(item.topic),
                 url=item.url,
                 silent=item.silent,
+                buttons=item.buttons,
             )
         except TelegramError as err:
             if err.retry_after:
@@ -116,7 +164,7 @@ def run(cfg: Config) -> None:
         try:
             updates = bot.call(
                 "getUpdates",
-                {"offset": offset, "timeout": 25, "allowed_updates": ["message"]},
+                {"offset": offset, "timeout": 25, "allowed_updates": ["message", "callback_query"]},
                 timeout=40,
             )
         except TelegramError as err:
@@ -126,6 +174,12 @@ def run(cfg: Config) -> None:
         for update in updates:
             offset = update["update_id"] + 1
             store.set_cursor("telegram:offset", str(offset))
+            if (query := authorized_press(update, cfg)) is not None:
+                try:
+                    press(bot, store, cfg, query)
+                except TelegramError as err:
+                    _LOGGER.warning("button press: %s", err)
+                continue
             message = authorized(update, cfg)
             if message is None:
                 continue

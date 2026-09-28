@@ -20,6 +20,7 @@ class Config:
     poll_seconds: int
     ignore_authors: frozenset[str]
     backfill_hours: float
+    history_minutes: int
     chat_id: int
     allowed_user_id: int
     topics: dict[str, int | None]
@@ -27,6 +28,10 @@ class Config:
     summary_model: str
     num_ctx: int
     llm_timeout: float
+    agent_model: str
+    agent_num_ctx: int
+    agent_timeout: float
+    brief_betas: bool
 
 
 def is_cloud_model(name: str) -> bool:
@@ -46,8 +51,10 @@ def parse(text: str) -> Config:
         raise ValueError("github.repos must list at least one 'owner/name'")
 
     model = str(llm.get("summary_model", ""))
-    if model and is_cloud_model(model):
-        raise ValueError(f"llm.summary_model {model!r} is a cloud model; use a local one")
+    agent_model = str(llm.get("agent_model", ""))
+    for key, name in (("summary_model", model), ("agent_model", agent_model)):
+        if name and is_cloud_model(name):
+            raise ValueError(f"llm.{key} {name!r} is a cloud model; use a local one")
 
     if "chat_id" not in telegram or "allowed_user_id" not in telegram:
         raise ValueError("telegram.chat_id and telegram.allowed_user_id are required")
@@ -57,11 +64,17 @@ def parse(text: str) -> Config:
     if unknown:
         raise ValueError(f"unknown telegram.topics: {sorted(unknown)}")
 
+    # 0 turns the history off; otherwise it syncs at most every 10 minutes.
+    history_minutes = int(github.get("history_minutes", 60))
+    if history_minutes:
+        history_minutes = max(10, history_minutes)
+
     return Config(
         repos=repos,
         poll_seconds=max(60, int(github.get("poll_seconds", 120))),
         ignore_authors=frozenset(a.lower() for a in github.get("ignore_authors", ())),
         backfill_hours=float(github.get("backfill_hours", 0)),
+        history_minutes=history_minutes,
         chat_id=int(telegram["chat_id"]),
         allowed_user_id=int(telegram["allowed_user_id"]),
         # 0 or missing means the group's General topic.
@@ -70,6 +83,10 @@ def parse(text: str) -> Config:
         summary_model=model,
         num_ctx=int(llm.get("num_ctx", 16384)),
         llm_timeout=float(llm.get("timeout_seconds", 180)),
+        agent_model=agent_model,
+        agent_num_ctx=int(llm.get("agent_num_ctx", 32768)),
+        agent_timeout=float(llm.get("agent_timeout_seconds", 900)),
+        brief_betas=bool(llm.get("brief_betas", True)),
     )
 
 

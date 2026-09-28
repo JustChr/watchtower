@@ -22,6 +22,16 @@ end-to-end locally.
     against a fixed schema.
   - `render.py` — Telegram HTML; every outside value is escaped.
   - `store.py` — shared SQLite (WAL): seen, cursors, outbox, heartbeats.
+  - `history.py` — searchable copy (FTS5, own `history.db`) of every issue,
+    PR, discussion and comment, plus the repo briefs; synced by the watcher.
+  - `snapshot.py` — default-branch tarball → `/data/repos/<owner>/<name>`
+    (safe unpack); gathers the repo's own docs and file tree.
+  - `brief.py` — per new release (betas too), `agent_model` writes a repo
+    brief from the docs at the tag + release notes (no releases: from main,
+    at most weekly); used as
+    prompt context only after the user approves it via a Telegram button.
+  - Buttons: the gateway records presses as `decision` rows in the store;
+    the watcher applies them. `callback_data` is `kind:action:id`.
   - `github.py`, `telegram.py`, `config.py`, `__main__.py`.
 - `compose.yaml`, `Dockerfile` — one image, two services.
 - `config.example.toml` — template; the real `config.toml` lives only on the host.
