@@ -102,7 +102,7 @@ def test_a_link_out_of_the_copy_is_not_followed(hist, code, tmp_path):
         pytest.skip("no symlinks here")
     ws = workspace(hist, code)
     assert ws.run("read_code", {"path": "link.txt"}).startswith("No file")
-    assert "outside" not in ws.run("search_code", {"text": "outside"})
+    assert ws.run("search_code", {"text": "outside"}) == "No line contains «outside»."
 
 
 def test_search_code_is_plain_text_and_remembers_what_it_found(hist, code):
