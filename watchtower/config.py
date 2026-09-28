@@ -31,6 +31,7 @@ class Config:
     agent_model: str
     agent_num_ctx: int
     agent_timeout: float
+    agent_steps: int  # rounds of tool calls before an assessment; 0 = no tools
     brief_betas: bool
     draft_replies: bool
     app_id: str  # the GitHub App that posts approved replies; "" = posting off
@@ -98,6 +99,7 @@ def parse(text: str) -> Config:
         agent_model=agent_model,
         agent_num_ctx=int(llm.get("agent_num_ctx", 32768)),
         agent_timeout=float(llm.get("agent_timeout_seconds", 900)),
+        agent_steps=max(0, int(llm.get("agent_steps", 20))),
         brief_betas=bool(llm.get("brief_betas", True)),
         draft_replies=bool(llm.get("draft_replies", True)),
         app_id=app_id,

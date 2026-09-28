@@ -416,14 +416,24 @@ def verdict(**changes) -> dict:
 
 class FakeModel:
     """Stands in for Ollama: answers each pass by the schema it asks for, and
-    remembers what each pass was given."""
+    remembers what each pass was given. Investigation turns (``act``) come from
+    ``turns``; when they run out, the model stops calling tools."""
 
     def __init__(self) -> None:
         self.verdicts: list[dict | str] = [verdict()]
         self.reply = {"reply": "Thanks! Which version?", "note": "n"}
         self.findings: list[dict] = []
+        self.turns: list[dict] = []
         self.calls: list[tuple[str, list[dict]]] = []
+        self.acts: list[list[dict]] = []
         self.fail: str | None = None
+
+    def act(self, cfg, model, messages, tools, *, num_ctx, timeout):
+        assert model == "big:120b" and num_ctx == cfg.agent_num_ctx
+        self.acts.append([dict(m) for m in messages])
+        if self.fail == "act":
+            raise TimeoutError
+        return self.turns.pop(0) if self.turns else {"content": "Nothing more to find."}
 
     def __call__(self, cfg, model, messages, *, num_ctx, timeout, schema=None):
         assert model == "big:120b" and num_ctx == cfg.agent_num_ctx
@@ -457,6 +467,7 @@ class FakeModel:
 def model(monkeypatch):
     fake = FakeModel()
     monkeypatch.setattr(llm, "converse", fake)
+    monkeypatch.setattr(llm, "act", fake.act)
     return fake
 
 
@@ -534,6 +545,27 @@ def test_a_corrected_quote_stops_the_retries(agent_cfg, store, hist, tmp_path, m
     assert result.verdict.attempts == 2
     # Found, though not where the model said: the real source is recorded.
     assert [(e.source, e.verified) for e in result.verdict.evidence] == [("thread", True)]
+
+
+def test_a_retry_that_drops_checked_evidence_doesnt_replace_the_verdict(
+    agent_cfg, store, hist, tmp_path, model
+):
+    put_issue(hist)
+    sound = verdict(
+        category="our_bug",
+        confidence="high",
+        evidence=[
+            {"source": "thread", "quote": "stays at 80 %", "point": "the symptom"},
+            {"source": "thread", "quote": "rc=5 at 14:00", "point": "made up"},
+        ],
+    )
+    model.verdicts = [sound, verdict(category="needs_info", confidence="low", evidence=[])]
+    add_draft(store)
+    result = drafts.generate(agent_cfg, store.claim_draft(), hist, tmp_path)
+    correction = model.prompts("assess")[1][1]
+    assert "The other evidence checked out: keep it." in correction
+    assert (result.verdict.category, result.verdict.attempts) == ("our_bug", 1)
+    assert [e.verified for e in result.verdict.evidence] == [True, False]
 
 
 def test_a_failed_or_unusable_assessment_means_no_draft(agent_cfg, store, hist, tmp_path, model):

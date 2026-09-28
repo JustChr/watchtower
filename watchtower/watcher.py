@@ -8,7 +8,7 @@ import shutil
 import time
 from pathlib import Path
 
-from . import attachments, brief, llm, render, snapshot
+from . import attachments, brief, drafts, llm, render, snapshot
 from .config import DATA_DIR, Config, read_secret
 from .events import Event, Source, poll_repo
 from .github import GitHub, GitHubError, RateLimited
@@ -42,11 +42,17 @@ def wants_draft(event: Event, summary: llm.Summary | None, cfg: Config) -> bool:
 
 
 def queue_draft(
-    event: Event, source: Source, history: History, store: Store, files: Path | None = None
+    event: Event,
+    source: Source,
+    history: History,
+    store: Store,
+    files: Path | None = None,
+    root: Path | None = None,
 ) -> bool:
-    """Refresh the thread in the history and download its attachments into ``files``
-    (the drafter can't reach GitHub), then queue a draft. Without a fresh thread
-    there's no draft: it would answer an old state. Without the files there is one."""
+    """Refresh the thread in the history, download its attachments into ``files`` and
+    the code at the author's version under ``root`` (the drafter can't reach GitHub),
+    then queue a draft. Without a fresh thread there's no draft: it would answer an
+    old state. Without the files or the code there is one."""
 
     try:
         sync_thread(source, history, event.repo, event.number, event.thread_kind)
@@ -58,6 +64,12 @@ def queue_draft(
             attachments.download(history.thread(event.repo, event.number), event.repo, files)
         except Exception:  # noqa: BLE001 -- the draft says what it couldn't read
             _LOGGER.exception("%s: attachments", event.key)
+    if root is not None:
+        try:
+            thread = history.thread(event.repo, event.number)
+            drafts.fetch_code(source, history, event.repo, thread, files, root)
+        except Exception as err:  # noqa: BLE001 -- the draft uses the default branch
+            _LOGGER.warning("%s: code at the author's version: %s", event.key, err)
     store.add_draft(
         event.key,
         repo=event.repo,
@@ -79,6 +91,7 @@ def handle(
     source: Source | None = None,
     history: History | None = None,
     files: Path | None = None,
+    root: Path | None = None,
 ) -> None:
     # Bot activity (Dependabot, Actions) is reported silently and not summarised.
     summary = None if event.is_bot else llm.summarize(cfg, event.for_model(), context)
@@ -86,7 +99,7 @@ def handle(
         source is not None
         and history is not None
         and wants_draft(event, summary, cfg)
-        and queue_draft(event, source, history, store, files)
+        and queue_draft(event, source, history, store, files, root)
     )
     store.enqueue(
         event.topic,
@@ -107,11 +120,13 @@ def poll_once(
     contexts: dict[str, str] | None = None,
     history: History | None = None,
     files: Path | None = None,
+    root: Path | None = None,
 ) -> float | None:
     """Poll every repo once. Returns the time to sleep until if rate limited.
 
     ``contexts`` maps a repo to background for its summaries (``brief.project_context``).
-    Without ``history`` no drafts are queued; ``files`` is where their attachments go.
+    Without ``history`` no drafts are queued; ``files`` is where their attachments go,
+    ``root`` where the code snapshots are.
     """
 
     for repo in cfg.repos:
@@ -133,7 +148,7 @@ def poll_once(
         for event in poll.events:
             if not store.is_seen(event.key):
                 context = (contexts or {}).get(repo, "")
-                handle(event, cfg, store, context, source, history, files)
+                handle(event, cfg, store, context, source, history, files, root)
         for name, value in poll.cursors.items():
             store.set_cursor(name, value)
     return None
@@ -266,7 +281,7 @@ def run(cfg: Config) -> None:
         apply_decisions(store, history)
         contexts = {repo: brief.project_context(history, repo, root) for repo in cfg.repos}
         resume_at = poll_once(
-            github, store, cfg, titles, errors, contexts, history, DATA_DIR / "attachments"
+            github, store, cfg, titles, errors, contexts, history, DATA_DIR / "attachments", root
         )
         history_due = cfg.history_minutes and started - synced >= cfg.history_minutes * 60
         if resume_at is None and history_due:

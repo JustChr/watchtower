@@ -96,6 +96,21 @@ def facts(
     return lines, _notes(reversed(newer))
 
 
+def code_release(
+    found: Sequence[Reported], releases: Sequence[Release], as_of: str | None = None
+) -> tuple[Release, str] | None:
+    """The release whose code to judge against, and why: the author's version if it
+    is a release; when replaying (``as_of``) otherwise the newest release then, as
+    today's code would already hold the fix. ``None``: use the default branch."""
+
+    releases = [r for r in releases if as_of is None or r.published < as_of]
+    if found and (release := _release_of(found[0].version, releases)) is not None:
+        return release, "the author's version"
+    if as_of is not None and releases:
+        return releases[0], "the newest release when the thread was written"
+    return None
+
+
 def _notes(releases: Iterable[Release]) -> str:
     parts, size = [], 0
     for release in releases:

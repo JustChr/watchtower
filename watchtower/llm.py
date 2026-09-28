@@ -123,7 +123,7 @@ def chat(
 def converse(
     cfg: Config,
     model: str,
-    messages: list[dict[str, str]],
+    messages: list[dict],
     *,
     num_ctx: int,
     timeout: float,
@@ -140,6 +140,29 @@ def converse(
     if schema is not None:
         payload["format"] = schema
     return _post(cfg, "/api/chat", payload, timeout)["message"]["content"]
+
+
+def act(
+    cfg: Config,
+    model: str,
+    messages: list[dict],
+    tools: list[dict],
+    *,
+    num_ctx: int,
+    timeout: float,
+) -> dict:
+    """The next turn of a conversation with tools: the raw (untrusted) message, with
+    ``content`` and maybe ``thinking`` and ``tool_calls``."""
+
+    payload: dict[str, Any] = {
+        "model": model,
+        "stream": False,
+        "options": {"temperature": 0.2, "num_ctx": num_ctx},
+        "messages": messages,
+        "tools": tools,
+    }
+    message = _post(cfg, "/api/chat", payload, timeout).get("message")
+    return message if isinstance(message, dict) else {}
 
 
 def summarize(cfg: Config, item: dict[str, str], context: str = "") -> Summary | None:

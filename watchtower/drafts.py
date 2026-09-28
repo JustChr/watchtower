@@ -4,8 +4,10 @@ The drafter process writes them (``drafter``); the poster posts one only after
 the user approved that exact text (``poster``).
 
 A draft is several passes with the agent model (time is cheap, context isn't):
-first an **assessment** of the thread (``analysis``: category, evidence checked
-against its sources, what's missing, where the fault is), shown to the user on
+first an **investigation** with read-only tools (``investigate``: the code at the
+author's version, the attached files, the history), then an **assessment** of the
+thread (``analysis``: category, evidence checked against its sources -- the code
+it read included -- what's missing, where the fault is), shown to the user on
 its own; then the **reply**, written from that assessment.
 
 What the model gets:
@@ -29,13 +31,14 @@ that would be posted, so a text too long to show in full can't be offered.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import analysis, attachments, brief, llm, render, snapshot, versions
+from . import analysis, attachments, brief, investigate, llm, render, snapshot, versions
 from .analysis import Verdict
 from .config import Config
 from .history import History
@@ -52,6 +55,10 @@ MAX_COMMENT = 2000
 MAX_COMMENTS = 20
 SIMILAR = 4
 MAX_EXAMPLE = 1200
+# The part of the assessment's context kept free for investigating with tools.
+INVESTIGATION_SHARE = 0.4
+# Kept free after investigating, for the final answer and its corrections.
+ASSESSMENT_ROOM = 4000
 
 REPLY_SYSTEM = """You draft replies for the maintainer of an open-source project to its
 GitHub issues and discussions. The maintainer reads your draft, may change it, and
@@ -420,6 +427,48 @@ def problem_text(thread: dict, newest_url: str) -> str:
     return text
 
 
+# -- the code to judge against ----------------------------------------------------------
+
+
+def fetch_code(
+    source: snapshot.Source,
+    history: History,
+    repo: str,
+    thread: dict,
+    folder: Path | None,
+    root: Path,
+    as_of: str | None = None,
+) -> Path | None:
+    """Fetch the code of the release the draft will judge ``thread`` against (see
+    ``versions.code_release``): the drafter has no internet. Needs the thread's
+    attachments in ``folder`` already (the diagnostics tell the version)."""
+
+    files = gather(thread, repo, folder)
+    found = versions.reported(thread["body"], files.named())
+    choice = versions.code_release(found, history.releases(repo), as_of)
+    if choice is None:
+        return None
+    return snapshot.fetch_version(source, repo, choice[0].tag, root)
+
+
+def code_copy(
+    root: Path, repo: str, choice: tuple[versions.Release, str] | None, as_of: str | None
+) -> tuple[Path | None, str]:
+    """The code to investigate and which version it is: the chosen release if the
+    watcher fetched it, else the default branch -- but never when replaying, as
+    today's code would already hold the fix."""
+
+    if choice is not None:
+        release, why = choice
+        path = snapshot.version_path(root, repo, release.tag)
+        if path is not None and path.is_dir():
+            return path, f"{release.tag}, {why}"
+    if as_of is not None:
+        return None, ""
+    main = snapshot.path_for(root, repo)
+    return (main, "the default branch as it is today") if main.is_dir() else (None, "")
+
+
 # -- the whole draft ------------------------------------------------------------------
 
 
@@ -466,17 +515,60 @@ def generate(
     shown = thread_text(thread, draft.url)
     earlier, earlier_sources = similar(history, draft.repo, thread, as_of)
 
+    code, code_label = code_copy(
+        root, draft.repo, versions.code_release(found, history.releases(draft.repo), as_of), as_of
+    )
+    workspace = investigate.Workspace(
+        history, draft.repo, draft.number, code, code_label, files.named(), as_of
+    )
+    capacity = analysis.capacity(cfg)
     system = analysis.ASSESS_SYSTEM + known
-    room = analysis.capacity(cfg) - len(system)
+    if cfg.agent_steps:
+        system += workspace.system(cfg.agent_steps)
+    room = capacity - len(system)
     room -= len(assessment_prompt(checked, notes, shown, "", earlier))
+    if cfg.agent_steps:
+        room -= int(capacity * INVESTIGATION_SHARE)
     problem = problem_text(thread, draft.url)
     files_part = file_sections(cfg, files, problem, room, beat)
-    sources = {"thread": full_text(thread), "releases": notes, **files.named(), **earlier_sources}
-    verdict = analysis.assess(
-        cfg, system, assessment_prompt(checked, notes, shown, files_part, earlier), sources, beat
-    )
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": assessment_prompt(checked, notes, shown, files_part, earlier)},
+    ]
+    if cfg.agent_steps:
+        investigate.run(cfg, messages, workspace, capacity, beat)
+        investigate.fit(messages, capacity - ASSESSMENT_ROOM)
+        # One question again, the investigation in it as text (see ``transcript``).
+        found = investigate.transcript(messages[2:]) or "(nothing)"
+        question = "\n".join(
+            [
+                messages[1]["content"],
+                *_section(
+                    "What you found investigating (your tool calls and their results)", found
+                ),
+                "",
+                investigate.FINAL_ASK,
+            ]
+        )
+        messages = [
+            {"role": "system", "content": analysis.ASSESS_SYSTEM + known},
+            {"role": "user", "content": question},
+        ]
+    sources = {
+        **workspace.read,  # first: a file it read can't shadow the names below
+        "thread": full_text(thread),
+        "releases": notes,
+        **files.named(),
+        **earlier_sources,
+    }
+    verdict = analysis.assess(cfg, messages, sources, beat)
     if verdict is None:
         return None
+    verdict = dataclasses.replace(
+        verdict,
+        looked_at=tuple(workspace.steps),
+        unknown_paths=tuple(investigate.unknown_paths(f"{verdict.code} {verdict.fix}", code)),
+    )
 
     beat("writing the reply")
     try:

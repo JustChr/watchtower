@@ -47,6 +47,7 @@ def agent_cfg(cfg):
 def model(monkeypatch):
     fake = FakeModel()
     monkeypatch.setattr(llm, "converse", fake)
+    monkeypatch.setattr(llm, "act", fake.act)
     return fake
 
 
@@ -229,9 +230,12 @@ def test_the_rendered_assessment_always_fits_a_message():
         missing=("m" * 400,) * 5,
         code="c" * 400,
         fix="f" * 800,
+        looked_at=("searched the code for «<b>»",) * 60,
+        unknown_paths=("x" * 300 + ".py",) * 5,
     )
     text = render.verdict(draft, huge)
     assert len(text) < 4096 and "<q>" not in text and "&lt;q&gt;" in text
+    assert "<b>»" not in text and "🔎 <i>60 lookups: " in text and "No such file" in text
     assert "⚠️ not found in" in text and "✓" in text
 
 
@@ -306,7 +310,7 @@ def test_replay_writes_a_report_after_every_issue(agent_cfg, hist, tmp_path, mod
 
     assert len(outcomes) == 1
     text = out.read_text(encoding="utf-8")
-    assert "| #8 | 🔧 user setup | high | 0/0 | completed |" in text
+    assert "| #8 | 🔧 user setup | high | 0/0 | 0 | completed |" in text
     assert "> Please re-authorize.\n> Then restart." in text
     assert "**Your first answer** (closed as completed):\n\n> Answer to 8" in text
     assert said[0].startswith("1 issue(s) to replay") and said[-1].startswith("#8: user_setup")

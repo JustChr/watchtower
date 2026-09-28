@@ -20,6 +20,10 @@ end-to-end locally.
   - `drafter.py` — writes drafts with `agent_model`; **no secrets, no
     internet** (only `watchtower-llm`). Logic in `drafts.py`; attached text
     files come from `attachments.py` (the watcher downloads them, tokenless).
+    Before the assessment, `investigate.py` lets the model look things up with
+    read-only tools (code at the author's version, which the watcher fetches
+    into `/data/repos/.versions/`; attached files; history), bounded by
+    `agent_steps`; tool arguments are untrusted, paths confined to the copy.
   - `poster.py` — the only GitHub writer: holds the App key (`github_app.py`),
     applies draft decisions, posts exactly the approved version; no model.
   - `gateway.py` — the only Telegram client (a bot allows one `getUpdates`

@@ -125,6 +125,10 @@ def verdict(d: Draft, v: Verdict) -> str:
         lines.append(f"<b>Where</b>: {fit(v.code, 300)}")
     if v.fix:
         lines.append(f"<b>Fix</b>: {fit(v.fix, 500)}")
+    if v.unknown_paths:
+        lines.append(f"⚠️ No such file in the code: {fit(', '.join(v.unknown_paths), 120)}")
+    if v.looked_at:
+        lines.append(f"🔎 <i>{len(v.looked_at)} lookups: {fit('; '.join(v.looked_at), 250)}</i>")
     return "\n".join(lines)
 
 

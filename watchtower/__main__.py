@@ -71,6 +71,7 @@ def evaluate(argv: list[str]) -> int:
     runs in the watcher container."""
 
     from . import evaluate as replay
+    from .github import GitHub
     from .history import History
 
     limit = None
@@ -99,6 +100,7 @@ def evaluate(argv: list[str]) -> int:
         config.DATA_DIR / "eval" / f"{repo.split('/')[1]}-{stamp}.md",
         [int(a) for a in argv[1:]],
         limit,
+        source=GitHub(config.read_secret("github_read")),
     )
     return 0
 

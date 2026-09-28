@@ -39,7 +39,9 @@ timeout_seconds = 180
 # Big: writes the repo brief and the reply drafts (later: PR reviews). Reads up
 # to ~60k characters of docs + the file list, so it needs a large context.
 agent_model = "gpt-oss:120b"      # MoE, 5B active, ~65 GB; fits next to the summary model in 128 GB
-agent_num_ctx = 32768
+agent_num_ctx = 65536             # investigating needs room; fits next to the summary model
 agent_timeout_seconds = 900
+agent_steps = 20                  # before judging an issue: rounds of looking things up
+                                  # (code at the author's version, attached files, history); 0 = off
 brief_betas = true                # a new beta release gets a new brief too; false = stable only
 draft_replies = true              # draft a reply when an issue/discussion (or a comment) needs one

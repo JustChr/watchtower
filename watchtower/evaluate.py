@@ -9,8 +9,11 @@ next to what really happened: the maintainer's first answer and how the issue
 was closed. Judging that is the user's part; the report is the evidence, and a
 rerun after a change shows whether it helped.
 
-It needs the model and the internet (attachments are downloaded, without a
-token), so it runs in the watcher container, from a shell:
+The code it may investigate is the author's version, or else the newest release
+at the cutoff -- never today's default branch, which would already hold the fix.
+
+It needs the model and the internet (attachments are downloaded without a token,
+the code with the read token), so it runs in the watcher container, from a shell:
 ``python -m watchtower eval <owner/name> [--limit N] [number ...]``. The report,
 ``/data/eval/<name>-<time>.md``, is rewritten after every issue.
 """
@@ -23,7 +26,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import attachments, drafts
+from . import attachments, drafts, snapshot
 from .analysis import CATEGORIES
 from .config import Config
 from .history import History
@@ -100,15 +103,16 @@ def report(repo: str, cfg: Config, outcomes: Sequence[Outcome], started: str) ->
         f"{len(outcomes)} closed issue(s), each cut just before the maintainer's first answer."
         f" Model {cfg.agent_model}, context {cfg.agent_num_ctx} tokens.",
         "",
-        "| # | Model says | Confidence | Evidence checked | Closed as | Minutes |",
-        "|---|---|---|---|---|---|",
+        "| # | Model says | Confidence | Evidence checked | Steps | Closed as | Minutes |",
+        "|---|---|---|---|---|---|---|",
     ]
     for o in outcomes:
         v = o.result.verdict if o.result else None
         checked = f"{sum(e.verified for e in v.evidence)}/{len(v.evidence)}" if v else "–"
         lines.append(
             f"| #{o.case.number} | {CATEGORIES[v.category] if v else 'failed'}"
-            f" | {v.confidence if v else '–'} | {checked} | {o.case.outcome}"
+            f" | {v.confidence if v else '–'} | {checked} | {len(v.looked_at) if v else '–'}"
+            f" | {o.case.outcome}"
             f" | {o.seconds / 60:.1f} |"
         )
     for o in outcomes:
@@ -129,6 +133,10 @@ def report(repo: str, cfg: Config, outcomes: Sequence[Outcome], started: str) ->
                 lines.append(f"- Where: {v.code}")
             if v.fix:
                 lines.append(f"- Fix: {v.fix}")
+            if v.unknown_paths:
+                lines.append(f"- ✗ No such file in the code: {', '.join(v.unknown_paths)}")
+            if v.looked_at:
+                lines.append(f"- Looked at: {'; '.join(v.looked_at)}")
             if o.result.note:
                 lines.append(f"- Note: {o.result.note}")
             lines += ["", "**Model's reply:**", "", _quote(o.result.reply)]
@@ -151,7 +159,10 @@ def run(
     numbers: Sequence[int] = (),
     limit: int | None = None,
     say: Callable[[str], None] = print,
+    source: snapshot.Source | None = None,
 ) -> list[Outcome]:
+    """Replay; with a ``source`` (GitHub), each case gets the code at its version."""
+
     selected = cases(history, repo, numbers)[:limit]
     started = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime())
     say(f"{len(selected)} issue(s) to replay; report: {out}")
@@ -162,6 +173,11 @@ def run(
             attachments.download(case.thread, repo, folder)
         except Exception as err:  # noqa: BLE001 -- replay without the files
             say(f"#{case.number}: attachments failed ({type(err).__name__})")
+        if source is not None:
+            try:
+                drafts.fetch_code(source, history, repo, case.thread, folder, root, case.cutoff)
+            except Exception as err:  # noqa: BLE001 -- replay without the code
+                say(f"#{case.number}: code failed ({type(err).__name__})")
         draft = Draft(
             id=0,
             event_key=f"eval:{repo}#{case.number}",

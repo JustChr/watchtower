@@ -10,7 +10,8 @@ size and file-count check, into a staging folder that then replaces the old copy
 
 The default branch holds what the maintainers merged, so its docs
 (``trusted_docs``) are the most trustworthy text about a repo there is. A
-release's tag can be fetched the same way (``fetch``) for the repo brief.
+release's tag can be fetched the same way (``fetch``) for the repo brief, and
+for judging an issue against the code the author runs (``fetch_version``).
 """
 
 from __future__ import annotations
@@ -46,7 +47,11 @@ TOP_DOCS = (
     "contributing.md",
 )
 
+VERSIONS = ".versions"  # under the repos root: copies at release tags
+KEEP_VERSIONS = 6
+
 _SHA = re.compile(r"[0-9a-f]{40}")
+_TAG = re.compile(r"[0-9A-Za-z][0-9A-Za-z._+-]{0,63}")
 _HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
 _HTML_TAG = re.compile(r"<[a-zA-Z/][^>]*>")
 _MD_IMAGE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
@@ -126,6 +131,32 @@ def sync(source: Source, history: History, repo: str, root: Path) -> str:
     fetch(source, repo, commit, target)
     history.set_cursor(name, commit)
     return commit
+
+
+def version_path(root: Path, repo: str, tag: str) -> Path | None:
+    """Where the copy of ``repo`` at release ``tag`` lives; ``None`` for a tag that
+    can't be a folder name."""
+
+    if not _TAG.fullmatch(tag):
+        return None
+    return path_for(root / VERSIONS, repo) / tag
+
+
+def fetch_version(source: Source, repo: str, tag: str, root: Path) -> Path | None:
+    """A copy of ``repo`` at release ``tag``, for judging an issue against the code
+    the author runs. Kept for later drafts; only the ``KEEP_VERSIONS`` last used stay."""
+
+    target = version_path(root, repo, tag)
+    if target is None:
+        return None
+    if target.is_dir():
+        os.utime(target)  # used again: the last to be pruned
+        return target
+    fetch(source, repo, tag, target)
+    copies = [p for p in target.parent.iterdir() if p.is_dir() and _TAG.fullmatch(p.name)]
+    for old in sorted(copies, key=lambda p: p.stat().st_mtime, reverse=True)[KEEP_VERSIONS:]:
+        shutil.rmtree(old, ignore_errors=True)
+    return target
 
 
 def releases(source: Source, repo: str, limit: int = 100) -> list[Release]:
