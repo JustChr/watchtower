@@ -90,6 +90,8 @@ def draft(d: Draft, version: Version, error: str = "") -> str:
     lines = [head, fit(d.title, 200)]
     if error:
         lines.append(f"⚠️ {fit(error, 300)}")
+    if d.attachments:
+        lines.append(f"📎 {fit(d.attachments, 300)}")
     if version.author == "model" and d.note:
         lines.append(f"🤖 <i>{fit(d.note, 300)}</i>")
     lines += [

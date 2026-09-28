@@ -192,6 +192,23 @@ def skill(target: Path, name: str, limit: int = MAX_DOC) -> str:
     return _read(target / ".claude" / "skills" / name / "SKILL.md", limit) or ""
 
 
+def issue_templates(target: Path, budget: int = 8000) -> list[tuple[str, str]]:
+    """``(path, text)`` of the repo's issue forms and templates: what reporters are asked for."""
+
+    folder = target / ".github" / "ISSUE_TEMPLATE"
+    if not folder.is_dir():
+        return []
+    templates = []
+    for path in sorted(folder.iterdir()):
+        if path.suffix.lower() not in {".yml", ".yaml", ".md"} or path.stem.lower() == "config":
+            continue
+        text = _read(path, min(MAX_DOC, budget)) if budget > 0 else None
+        if text:
+            templates.append((path.relative_to(target).as_posix(), text))
+            budget -= len(text)
+    return templates
+
+
 def tree(target: Path, limit: int = TREE_LIMIT) -> list[str]:
     """Relative file paths, sorted, without dependency and build folders."""
 

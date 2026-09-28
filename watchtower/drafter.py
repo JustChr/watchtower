@@ -33,8 +33,7 @@ def work(draft: Draft, cfg: Config, store: Store, history: History, root: Path) 
             url=draft.url,
         )
         return
-    text, note = result
-    version = store.finish_draft(draft.id, text, note)
+    version = store.finish_draft(draft.id, result.reply, result.note, result.attachments)
     drafts.offer(store, store.draft(draft.id), version)
     _LOGGER.info("draft %d ready for %s#%d", draft.id, draft.repo, draft.number)
 

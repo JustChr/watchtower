@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS draft (
     note TEXT NOT NULL DEFAULT '',   -- the model's note for the user
     reason TEXT NOT NULL DEFAULT '', -- the user's reason for rejecting it
     posted_url TEXT NOT NULL DEFAULT '',
+    attachments TEXT NOT NULL DEFAULT '', -- what code found attached, for the user
     created REAL NOT NULL,
     updated REAL NOT NULL
 );
@@ -76,6 +77,7 @@ MIGRATIONS = (
     ("outbox", "ref", "TEXT"),
     ("outbox", "message_id", "INTEGER"),
     ("decision", "text", "TEXT"),
+    ("draft", "attachments", "TEXT NOT NULL DEFAULT ''"),
 )
 # After the migrations: they may index a migrated column.
 INDEXES = "CREATE INDEX IF NOT EXISTS outbox_message ON outbox (message_id);"
@@ -83,7 +85,7 @@ INDEXES = "CREATE INDEX IF NOT EXISTS outbox_message ON outbox (message_id);"
 MAX_ATTEMPTS = 5
 _DRAFT_COLUMNS = (
     "id, event_key, repo, number, kind, topic, title, url, reply_to, status, note, reason,"
-    " posted_url"
+    " posted_url, attachments"
 )
 
 
@@ -113,6 +115,7 @@ class Draft:
     note: str
     reason: str
     posted_url: str
+    attachments: str
 
 
 @dataclass(frozen=True)
@@ -337,7 +340,7 @@ class Store:
             (time.time(),),
         )
 
-    def finish_draft(self, draft_id: int, text: str, note: str) -> Version:
+    def finish_draft(self, draft_id: int, text: str, note: str, attachments: str = "") -> Version:
         """The model's draft is ready; an older ready draft for the same thread is outdated."""
 
         with self.db:
@@ -348,7 +351,7 @@ class Store:
                 " WHERE status = 'ready' AND repo = ? AND number = ? AND id != ?",
                 (time.time(), draft.repo, draft.number, draft_id),
             )
-            self._set_draft(draft_id, status="ready", note=note)
+            self._set_draft(draft_id, status="ready", note=note, attachments=attachments)
             version = self.add_version(draft_id, text, "model")
         return version
 
