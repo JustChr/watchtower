@@ -69,11 +69,20 @@ When the summary says a stranger's new issue, discussion, or comment on one
 thread in the history and queues a draft. The **drafter** has `agent_model`
 write it from:
 
-- trusted, as instructions: the approved brief (else the README's opening) and
-  the repo's own `.claude/skills/triage/SKILL.md`;
-- data: the thread with the message to answer marked, and similar earlier
-  threads from the history with the maintainers' answers (to spot duplicates,
-  and to answer the way you do).
+- trusted, as instructions: the approved brief (else the README's opening),
+  the repo's own `.claude/skills/triage/SKILL.md` and its issue forms;
+- checked by code: which files are attached (a ticked "I have attached…" box
+  proves nothing), and which of them the model gets;
+- data: the thread with the message to answer marked; the attached **text
+  files** (diagnostics JSON, logs), which the watcher downloads into
+  `/data/attachments` without a token (up to 2 MB, text only, JSON minified, a
+  long file keeps its start and end); and similar earlier threads from the
+  history with the maintainers' answers (to spot duplicates, and to answer the
+  way you do).
+
+The draft's 📎 line shows each file as *read* or *not read*. The model is told
+it can't see files it didn't get; if a reply still sounds as if it read one,
+the draft carries a ⚠️ warning.
 
 The draft arrives in the item's topic, in a copyable block, with
 **✅ Post** / **🗑 Reject**:

@@ -2,8 +2,9 @@
 
 It is the one process that feeds strangers' text to the agent model, so it holds
 no secret and has no internet: its only network is ``watchtower-llm`` to Ollama.
-It reads the history and the code snapshot, and writes drafts to the store; the
-gateway shows them, the poster posts them after approval.
+It reads the history, the code snapshot and the attachments the watcher
+downloaded, and writes drafts to the store; the gateway shows them, the poster
+posts them after approval.
 """
 
 from __future__ import annotations
@@ -22,9 +23,16 @@ _LOGGER = logging.getLogger(__name__)
 IDLE_SECONDS = 5
 
 
-def work(draft: Draft, cfg: Config, store: Store, history: History, root: Path) -> None:
+def work(
+    draft: Draft,
+    cfg: Config,
+    store: Store,
+    history: History,
+    root: Path,
+    folder: Path | None = None,
+) -> None:
     store.beat("drafter", f"drafting {draft.repo}#{draft.number}")  # can take minutes
-    result = drafts.generate(cfg, draft, history, root)
+    result = drafts.generate(cfg, draft, history, root, folder)
     if result is None:
         store.fail_draft(draft.id)
         store.enqueue(
@@ -53,7 +61,7 @@ def run(cfg: Config) -> None:
             time.sleep(IDLE_SECONDS)
             continue
         try:
-            work(draft, cfg, store, history, root)
+            work(draft, cfg, store, history, root, DATA_DIR / "attachments")
         except Exception:  # noqa: BLE001 -- one bad draft mustn't stop the drafter
             _LOGGER.exception("draft %d: unexpected error", draft.id)
             store.fail_draft(draft.id)

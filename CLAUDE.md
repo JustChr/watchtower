@@ -18,7 +18,8 @@ end-to-end locally.
   - `watcher.py` — poll loop; holds the GitHub **read-only** token; refreshes a
     thread and queues a draft when a stranger's item needs a reply.
   - `drafter.py` — writes drafts with `agent_model`; **no secrets, no
-    internet** (only `watchtower-llm`). Logic in `drafts.py`.
+    internet** (only `watchtower-llm`). Logic in `drafts.py`; attached text
+    files come from `attachments.py` (the watcher downloads them, tokenless).
   - `poster.py` — the only GitHub writer: holds the App key (`github_app.py`),
     applies draft decisions, posts exactly the approved version; no model.
   - `gateway.py` — the only Telegram client (a bot allows one `getUpdates`
