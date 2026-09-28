@@ -245,7 +245,7 @@ def test_a_stranger_needing_a_reply_gets_a_draft_on_a_fresh_thread(
         ({"association": "OWNER"}, True),  # a maintainer
         ({"author": "renovate[bot]"}, True),
         ({"kind": "pr"}, True),  # PRs: phase 3
-        ({}, False),  # nothing to answer
+        ({"kind": "issue_comment"}, False),  # a comment with nothing to answer
     ],
 )
 def test_no_draft_for_maintainers_bots_prs_or_no_reply_needed(
@@ -254,6 +254,17 @@ def test_no_draft_for_maintainers_bots_prs_or_no_reply_needed(
     monkeypatch.setattr(llm, "summarize", needs(summary_says_reply))
     watcher.handle(event(**changes), agent_cfg, store, "", ThreadSource(), hist)
     assert store.drafts("queued") == []
+
+
+@pytest.mark.parametrize("summary", [needs(False), lambda cfg, item, context="": None])
+def test_a_strangers_new_issue_gets_a_draft_whatever_the_summary_says(
+    agent_cfg, store, hist, monkeypatch, summary
+):
+    # A report answering an earlier question reads as "no reply needed" to the
+    # summary model; whether it needs one is the assessment's call.
+    monkeypatch.setattr(llm, "summarize", summary)
+    watcher.handle(event(), agent_cfg, store, "", ThreadSource(), hist)
+    assert len(store.drafts("queued")) == 1
 
 
 def test_no_draft_without_agent_model_or_when_turned_off(cfg, agent_cfg, store, hist, monkeypatch):

@@ -21,13 +21,20 @@ _LOGGER = logging.getLogger(__name__)
 ERROR_REPORT_INTERVAL = 3600
 
 
-def wants_draft(event: Event, summary: llm.Summary | None, cfg: Config) -> bool:
-    """A stranger's issue, discussion or comment on one that the summary says needs a reply."""
+# New threads: every one from a stranger gets a draft, whatever the summary says.
+OPENING_KINDS = frozenset({"issue", "discussion"})
 
+
+def wants_draft(event: Event, summary: llm.Summary | None, cfg: Config) -> bool:
+    """A stranger's new issue or discussion, or a stranger's comment on one that the
+    summary says needs a reply. A new thread doesn't depend on the small model's
+    one-line judgement (a report answering an earlier question reads as needing no
+    reply): the assessment judges it, and the user can reject the draft."""
+
+    opening = event.kind in OPENING_KINDS
     return (
         cfg.drafts
-        and summary is not None
-        and summary.needs_reply
+        and (opening or (summary is not None and summary.needs_reply))
         and event.thread_kind is not None
         and not event.is_bot
         and event.association not in MAINTAINERS
