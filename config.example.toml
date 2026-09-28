@@ -1,0 +1,24 @@
+# Copy to /opt/watchtower/config.toml on the host and fill in.
+# The IDs aren't secrets, but they are yours: keep the real file out of git.
+
+[github]
+repos = ["JustChr/BavarianData"]
+poll_seconds = 120                # minimum 60
+ignore_authors = ["JustChr"]      # your own activity isn't reported
+backfill_hours = 0                # first start only: also report items this many hours old
+
+[telegram]
+chat_id = -1001234567890          # the group (getUpdates: chat.id, starts with -100)
+allowed_user_id = 123456789       # you (getUpdates: from.id); nobody else can command the bot
+
+[telegram.topics]                 # message_thread_id per topic; 0 = General
+triage = 0                        # issues and their comments
+reviews = 0                       # pull requests and their comments
+replies = 0                       # discussions
+system = 0                        # startup, errors, /status
+
+[llm]
+url = "http://ollama:11434"       # the ollama container, over the watchtower-llm network
+summary_model = "qwen3-coder:30b" # must appear in `ollama list`; "" turns summaries off
+num_ctx = 16384
+timeout_seconds = 180

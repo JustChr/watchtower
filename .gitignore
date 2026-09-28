@@ -1,0 +1,11 @@
+# Host-only: real config holds personal IDs; data and secrets never belong in git
+/config.toml
+/data/
+/secrets/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.venv/

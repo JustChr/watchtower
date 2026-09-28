@@ -1,0 +1,57 @@
+# Watchtower, phase 1: watcher + gateway. Deploy as a Portainer stack or with
+# `docker compose up -d --build`. Host prerequisites are in README.md.
+
+name: watchtower
+
+x-service: &service
+  build: .
+  image: watchtower:local
+  pull_policy: build
+  restart: unless-stopped
+  init: true
+  user: "10001:10001"
+  read_only: true
+  tmpfs: [/tmp]
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  mem_limit: 256m
+  pids_limit: 64
+  volumes:
+    - /opt/watchtower/data:/data
+    - /opt/watchtower/config.toml:/config/config.toml:ro
+  logging:
+    driver: json-file
+    options: {max-size: 5m, max-file: "3"}
+
+services:
+  watcher:
+    <<: *service
+    command: [watcher]
+    secrets: [github_read]
+    networks: [egress, llm]   # llm: reaches the ollama container
+    healthcheck:
+      test: [CMD, python, -m, watchtower, health, watcher, "900"]
+      interval: 60s
+      start_period: 60s
+
+  gateway:
+    <<: *service
+    command: [gateway]
+    secrets: [telegram_token]
+    networks: [egress]
+    healthcheck:
+      test: [CMD, python, -m, watchtower, health, gateway, "120"]
+      interval: 60s
+      start_period: 30s
+
+secrets:
+  github_read:
+    file: /opt/watchtower/secrets/github_read
+  telegram_token:
+    file: /opt/watchtower/secrets/telegram_token
+
+networks:
+  egress: {}
+  llm:
+    name: watchtower-llm
+    external: true
