@@ -20,12 +20,13 @@ import re
 import shutil
 import tarfile
 import urllib.parse
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from .history import History
+from .history import History, Release
 from .llm import scrub
+
+__all__ = ["Release"]  # lives in history (which stores them); re-exported for callers
 
 MAX_DOWNLOAD = 200 * 1024 * 1024
 MAX_UNPACKED = 500 * 1024 * 1024
@@ -127,19 +128,7 @@ def sync(source: Source, history: History, repo: str, root: Path) -> str:
     return commit
 
 
-@dataclass(frozen=True)
-class Release:
-    tag: str
-    prerelease: bool
-    published: str
-    notes: str
-
-    @property
-    def label(self) -> str:
-        return f"{self.tag} ({'beta' if self.prerelease else 'stable'})"
-
-
-def releases(source: Source, repo: str, limit: int = 20) -> list[Release]:
+def releases(source: Source, repo: str, limit: int = 100) -> list[Release]:
     """Published releases, newest first (drafts left out)."""
 
     found = [

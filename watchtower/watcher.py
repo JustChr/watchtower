@@ -192,6 +192,7 @@ def sync_code(
         release_copy = snapshot.path_for(root / ".release", repo)
         try:
             releases = snapshot.releases(source, repo)
+            history.put_releases(repo, releases)  # the drafter compares versions with them
             target = brief.plan(releases, commit, cfg.brief_betas)
             if not brief.due(history, repo, target, time.time()):
                 continue

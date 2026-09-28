@@ -1,5 +1,5 @@
 """Entry point: ``python -m watchtower watcher|gateway|drafter|poster``, or
-``health <name> <max-age-seconds>``, or ``history ...``."""
+``health <name> <max-age-seconds>``, or ``history ...``, or ``eval ...``."""
 
 from __future__ import annotations
 
@@ -63,6 +63,46 @@ def history(argv: list[str]) -> int:
     return 0
 
 
+EVAL_USAGE = "python -m watchtower eval <owner/name> [--limit N] [number ...]"
+
+
+def evaluate(argv: list[str]) -> int:
+    """Replay closed issues (``evaluate``); needs the model and the internet, so it
+    runs in the watcher container."""
+
+    from . import evaluate as replay
+    from .history import History
+
+    limit = None
+    if "--limit" in argv:
+        at = argv.index("--limit")
+        if at + 1 >= len(argv) or not argv[at + 1].isdigit():
+            print(EVAL_USAGE, file=sys.stderr)
+            return 2
+        limit = int(argv[at + 1])
+        argv = argv[:at] + argv[at + 2 :]
+    if not argv or argv[0].count("/") != 1 or not all(a.isdigit() for a in argv[1:]):
+        print(EVAL_USAGE, file=sys.stderr)
+        return 2
+    cfg = config.load()
+    if not cfg.agent_model:
+        print("llm.agent_model is not set", file=sys.stderr)
+        return 2
+    repo = argv[0]
+    stamp = time.strftime("%Y%m%d-%H%M", time.gmtime())
+    replay.run(
+        cfg,
+        History(config.DATA_DIR / "history.db"),
+        repo,
+        config.DATA_DIR / "repos",
+        config.DATA_DIR / "attachments",
+        config.DATA_DIR / "eval" / f"{repo.split('/')[1]}-{stamp}.md",
+        [int(a) for a in argv[1:]],
+        limit,
+    )
+    return 0
+
+
 def main(argv: list[str]) -> int:
     logging.basicConfig(
         level=os.environ.get("WATCHTOWER_LOG", "INFO").upper(),
@@ -89,6 +129,8 @@ def main(argv: list[str]) -> int:
             return health(name, float(max_age))
         case ["history", *rest]:
             return history(rest)
+        case ["eval", *rest]:
+            return evaluate(rest)
         case _:
             print(__doc__, file=sys.stderr)
             return 2

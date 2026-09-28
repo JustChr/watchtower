@@ -129,14 +129,3 @@ def read(folder: Path, repo: str, link: Link) -> str | None:
         return json.dumps(json.loads(text), ensure_ascii=False, separators=(",", ":"))
     except ValueError:
         return text
-
-
-def fit(text: str, limit: int) -> str:
-    """``text`` within ``limit``: its start and its end (a log's latest lines), the middle cut."""
-
-    if len(text) <= limit:
-        return text
-    marker = f"\n[... {len(text) - limit} characters left out ...]\n"
-    head = max(0, (limit - len(marker)) // 4)
-    tail = max(0, limit - len(marker) - head)
-    return text[:head] + marker + (text[-tail:] if tail else "")

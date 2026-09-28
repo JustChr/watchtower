@@ -116,14 +116,26 @@ def chat(
 ) -> str:
     """One non-streaming chat turn; the raw (untrusted) answer text."""
 
+    messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    return converse(cfg, model, messages, num_ctx=num_ctx, timeout=timeout, schema=schema)
+
+
+def converse(
+    cfg: Config,
+    model: str,
+    messages: list[dict[str, str]],
+    *,
+    num_ctx: int,
+    timeout: float,
+    schema: dict | None = None,
+) -> str:
+    """The next answer in a conversation (``role``/``content`` messages, system first)."""
+
     payload: dict[str, Any] = {
         "model": model,
         "stream": False,
         "options": {"temperature": 0.2, "num_ctx": num_ctx},
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
+        "messages": messages,
     }
     if schema is not None:
         payload["format"] = schema

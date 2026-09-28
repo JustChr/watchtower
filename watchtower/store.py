@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS draft (
     reason TEXT NOT NULL DEFAULT '', -- the user's reason for rejecting it
     posted_url TEXT NOT NULL DEFAULT '',
     attachments TEXT NOT NULL DEFAULT '', -- what code found attached, for the user
+    verdict TEXT NOT NULL DEFAULT '',     -- the assessment (analysis.Verdict as JSON)
     created REAL NOT NULL,
     updated REAL NOT NULL
 );
@@ -78,6 +79,7 @@ MIGRATIONS = (
     ("outbox", "message_id", "INTEGER"),
     ("decision", "text", "TEXT"),
     ("draft", "attachments", "TEXT NOT NULL DEFAULT ''"),
+    ("draft", "verdict", "TEXT NOT NULL DEFAULT ''"),
 )
 # After the migrations: they may index a migrated column.
 INDEXES = "CREATE INDEX IF NOT EXISTS outbox_message ON outbox (message_id);"
@@ -85,7 +87,7 @@ INDEXES = "CREATE INDEX IF NOT EXISTS outbox_message ON outbox (message_id);"
 MAX_ATTEMPTS = 5
 _DRAFT_COLUMNS = (
     "id, event_key, repo, number, kind, topic, title, url, reply_to, status, note, reason,"
-    " posted_url, attachments"
+    " posted_url, attachments, verdict"
 )
 
 
@@ -116,6 +118,7 @@ class Draft:
     reason: str
     posted_url: str
     attachments: str
+    verdict: str  # JSON; ``analysis.Verdict.from_json``
 
 
 @dataclass(frozen=True)
@@ -340,7 +343,9 @@ class Store:
             (time.time(),),
         )
 
-    def finish_draft(self, draft_id: int, text: str, note: str, attachments: str = "") -> Version:
+    def finish_draft(
+        self, draft_id: int, text: str, note: str, attachments: str = "", verdict: str = ""
+    ) -> Version:
         """The model's draft is ready; an older ready draft for the same thread is outdated."""
 
         with self.db:
@@ -351,7 +356,9 @@ class Store:
                 " WHERE status = 'ready' AND repo = ? AND number = ? AND id != ?",
                 (time.time(), draft.repo, draft.number, draft_id),
             )
-            self._set_draft(draft_id, status="ready", note=note, attachments=attachments)
+            self._set_draft(
+                draft_id, status="ready", note=note, attachments=attachments, verdict=verdict
+            )
             version = self.add_version(draft_id, text, "model")
         return version
 

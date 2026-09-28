@@ -9,7 +9,8 @@ Everything here was written on GitHub and stays untrusted data. The one field
 GitHub computes itself is ``association`` (OWNER, MEMBER, CONTRIBUTOR, ...):
 it is how maintainer-written text is told apart from strangers' text.
 
-The same file holds the repo briefs (see ``brief``) with their approval state.
+The same file holds the repo briefs (see ``brief``) with their approval state,
+and the release list (with the maintainers' notes), for the offline drafter.
 
 Issues, PRs and discussions share one number space per repo, so an item is
 ``(repo, number)``. Syncs upsert, so overlapping pages are harmless.
@@ -20,6 +21,7 @@ from __future__ import annotations
 import re
 import sqlite3
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -69,6 +71,14 @@ CREATE TABLE IF NOT EXISTS brief (
     status TEXT NOT NULL,        -- pending, approved, rejected, failed
     created REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS release (
+    repo TEXT NOT NULL,
+    tag TEXT NOT NULL,
+    prerelease INTEGER NOT NULL,
+    published TEXT NOT NULL,
+    notes TEXT NOT NULL,         -- the maintainers' release notes
+    PRIMARY KEY (repo, tag)
+);
 CREATE VIRTUAL TABLE IF NOT EXISTS item_fts USING fts5(
     title, body, content='', contentless_delete=1, tokenize='unicode61 remove_diacritics 2'
 );
@@ -114,6 +124,18 @@ query($owner: String!, $name: String!, $number: Int!) {
 )
 
 _WORD = re.compile(r"\w+")
+
+
+@dataclass(frozen=True)
+class Release:
+    tag: str
+    prerelease: bool
+    published: str
+    notes: str
+
+    @property
+    def label(self) -> str:
+        return f"{self.tag} ({'beta' if self.prerelease else 'stable'})"
 
 
 @dataclass(frozen=True)
@@ -220,7 +242,38 @@ class History:
         ).fetchone()
         return row[0] if row else None
 
+    # -- releases (for drafts: which version is current, what changed since) ----
+
+    def put_releases(self, repo: str, releases: Sequence[Release]) -> None:
+        with self.db:
+            self.db.execute("BEGIN")
+            self.db.execute("DELETE FROM release WHERE repo = ?", (repo,))
+            self.db.executemany(
+                "INSERT OR REPLACE INTO release VALUES (?, ?, ?, ?, ?)",
+                [(repo, r.tag, int(r.prerelease), r.published, r.notes) for r in releases],
+            )
+
+    def releases(self, repo: str) -> list[Release]:
+        """Newest first."""
+
+        rows = self.db.execute(
+            "SELECT tag, prerelease, published, notes FROM release WHERE repo = ?"
+            " ORDER BY published DESC",
+            (repo,),
+        ).fetchall()
+        return [Release(tag, bool(pre), published, notes) for tag, pre, published, notes in rows]
+
     # -- reading -------------------------------------------------------------
+
+    def closed(self, repo: str, kind: str = "issue") -> list[int]:
+        """Numbers of the closed items of ``kind``, newest first."""
+
+        rows = self.db.execute(
+            "SELECT number FROM item WHERE repo = ? AND kind = ? AND state != 'open'"
+            " ORDER BY number DESC",
+            (repo, kind),
+        ).fetchall()
+        return [number for (number,) in rows]
 
     def counts(self, repo: str) -> dict[str, int]:
         rows = self.db.execute(
@@ -389,8 +442,11 @@ def _sync_list(source: Source, history: History, repo: str, what: str, save) -> 
     params = {"state": "all"} if what == "issues" else {}
     saved = 0
     for _ in range(ROUNDS):
+        # No ``since`` before the first cursor: the issues list answers ``since=1970-…``
+        # with nothing at all (the comments list doesn't), so the backfill got no issues.
+        after = {"since": since} if since != EPOCH else {}
         items = source.get_list(
-            path, since=since, sort="updated", direction="asc", per_page=100, **params
+            path, sort="updated", direction="asc", per_page=100, **after, **params
         )
         newest = since
         with history.db:

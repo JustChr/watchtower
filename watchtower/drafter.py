@@ -31,18 +31,29 @@ def work(
     root: Path,
     folder: Path | None = None,
 ) -> None:
-    store.beat("drafter", f"drafting {draft.repo}#{draft.number}")  # can take minutes
-    result = drafts.generate(cfg, draft, history, root, folder)
+    label = f"{draft.repo}#{draft.number}"
+
+    def beat(step: str) -> None:
+        # Between passes: a draft takes several model calls, each up to agent_timeout.
+        store.beat("drafter", f"{label}: {step}")
+
+    beat("starting")
+    result = drafts.generate(cfg, draft, history, root, folder, beat=beat)
     if result is None:
         store.fail_draft(draft.id)
         store.enqueue(
             draft.topic,
-            render.system(f"The draft reply to {draft.repo}#{draft.number} failed."),
+            render.system(f"The draft reply to {label} failed."),
             url=draft.url,
         )
         return
-    version = store.finish_draft(draft.id, result.reply, result.note, result.attachments)
-    drafts.offer(store, store.draft(draft.id), version)
+    version = store.finish_draft(
+        draft.id, result.reply, result.note, result.attachments, result.verdict.to_json()
+    )
+    ready = store.draft(draft.id)
+    # The assessment first, silently: the draft right after it is what needs you.
+    store.enqueue(draft.topic, render.verdict(ready, result.verdict), url=draft.url, silent=True)
+    drafts.offer(store, ready, version)
     _LOGGER.info("draft %d ready for %s#%d", draft.id, draft.repo, draft.number)
 
 

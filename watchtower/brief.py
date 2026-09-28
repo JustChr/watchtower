@@ -31,6 +31,7 @@ MAX_BRIEF = 3000
 MAX_NOTES = 5000
 REFRESH_DAYS = 7
 RETRY_FAILED = 86400
+RECENT_RELEASES = 20
 
 SYSTEM = """You write a briefing about a software project for an assistant that will
 triage the project's GitHub issues and review its pull requests.
@@ -103,7 +104,7 @@ def prompt(
         parts += [f"This brief describes release {release.label}, published {release.published}."]
     if releases:
         parts += ["", "Recent releases, newest first:"]
-        parts += [f"- {r.label}, {r.published}" for r in releases]
+        parts += [f"- {r.label}, {r.published}" for r in releases[:RECENT_RELEASES]]
     if release is not None and release.notes:
         parts += ["", f"===== release notes {release.tag} =====", release.notes[:MAX_NOTES]]
     parts += ["", "Files:", *files]

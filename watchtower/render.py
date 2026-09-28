@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from html import escape
 
+from .analysis import CATEGORIES, Verdict
 from .events import Event
 from .llm import Summary
 from .store import Draft, Version
@@ -98,6 +99,32 @@ def draft(d: Draft, version: Version, error: str = "") -> str:
         f"<pre>{escape(version.text)}</pre>",
         "<i>To change it, reply to this message with your version.</i>",
     ]
+    return "\n".join(lines)
+
+
+def verdict(d: Draft, v: Verdict) -> str:
+    """The assessment before a draft. Every field is capped so it fits one message."""
+
+    repo = d.repo.split("/", 1)[1]
+    lines = [
+        f"<b>🧭 Assessment #{d.number}</b> · {escape(repo)}",
+        fit(d.title, 200),
+        f"<b>{CATEGORIES[v.category]}</b> · confidence: {v.confidence}",
+    ]
+    if v.evidence:
+        lines.append("<b>Evidence</b>")
+        for e in v.evidence:
+            mark = "✓" if e.verified else "⚠️ not found in"
+            lines.append(
+                f"• {mark} {fit(e.source, 60)}: «{fit(e.quote, 120)}»\n  {fit(e.point, 160)}"
+            )
+    if v.missing:
+        lines.append("<b>Missing</b>")
+        lines += [f"• {fit(m, 160)}" for m in v.missing]
+    if v.code:
+        lines.append(f"<b>Where</b>: {fit(v.code, 300)}")
+    if v.fix:
+        lines.append(f"<b>Fix</b>: {fit(v.fix, 500)}")
     return "\n".join(lines)
 
 

@@ -22,8 +22,11 @@ class FakeGitHub:
     def get_list(self, path: str, **params: object) -> list[dict]:
         self.calls.append(path)
         items = self.comments if path.endswith("/comments") else self.issues
+        since = params.get("since", "")
+        if path.endswith("/issues") and str(since).startswith("1970"):
+            return []  # what GitHub really does (seen 2026-09-28)
         return sorted(
-            (i for i in items if i["updated_at"] >= params["since"]),
+            (i for i in items if i["updated_at"] >= since),
             key=lambda i: i["updated_at"],
         )
 

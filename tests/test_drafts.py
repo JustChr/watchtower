@@ -12,6 +12,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 from watchtower import (
+    analysis,
     attachments,
     config,
     drafter,
@@ -390,9 +391,65 @@ def test_long_threads_keep_the_opening_and_the_latest_comments(hist, monkeypatch
     assert "comment 3" not in text and "comment 4" in text and "comment 5" in text
 
 
-def test_generate_gives_the_model_context_guidelines_and_earlier_answers(
-    agent_cfg, store, hist, tmp_path, monkeypatch
-):
+def verdict(**changes) -> dict:
+    return {
+        "category": "needs_info",
+        "confidence": "medium",
+        "evidence": [],
+        "missing": ["the diagnostics"],
+        "code": "",
+        "fix": "",
+        **changes,
+    }
+
+
+class FakeModel:
+    """Stands in for Ollama: answers each pass by the schema it asks for, and
+    remembers what each pass was given."""
+
+    def __init__(self) -> None:
+        self.verdicts: list[dict | str] = [verdict()]
+        self.reply = {"reply": "Thanks! Which version?", "note": "n"}
+        self.findings: list[dict] = []
+        self.calls: list[tuple[str, list[dict]]] = []
+        self.fail: str | None = None
+
+    def __call__(self, cfg, model, messages, *, num_ctx, timeout, schema=None):
+        assert model == "big:120b" and num_ctx == cfg.agent_num_ctx
+        kind = {
+            id(analysis.ASSESS_SCHEMA): "assess",
+            id(analysis.FINDINGS_SCHEMA): "findings",
+            id(drafts.SCHEMA): "reply",
+        }[id(schema)]
+        self.calls.append((kind, [dict(m) for m in messages]))
+        if kind == self.fail:
+            raise TimeoutError
+        if kind == "assess":
+            answer = self.verdicts.pop(0) if len(self.verdicts) > 1 else self.verdicts[0]
+        elif kind == "findings":
+            answer = {"findings": self.findings}
+        else:
+            answer = self.reply
+        return answer if isinstance(answer, str) else json.dumps(answer)
+
+    def prompts(self, kind: str) -> list[tuple[str, str]]:
+        """``(system, last user message)`` of every call of ``kind``."""
+
+        return [
+            (msgs[0]["content"], [m for m in msgs if m["role"] == "user"][-1]["content"])
+            for k, msgs in self.calls
+            if k == kind
+        ]
+
+
+@pytest.fixture
+def model(monkeypatch):
+    fake = FakeModel()
+    monkeypatch.setattr(llm, "converse", fake)
+    return fake
+
+
+def test_a_draft_is_an_assessment_then_a_reply_built_on_it(agent_cfg, store, hist, tmp_path, model):
     put_issue(hist)
     put_issue(hist, 3, title="SoC stuck after update", body="Also stuck.", state="completed")
     put_comment(hist, 30, 3, "Fixed in v2.1, please update.", association="OWNER")
@@ -401,26 +458,83 @@ def test_generate_gives_the_model_context_guidelines_and_earlier_answers(
     skill.write_text("Always ask for the integration version.", encoding="utf-8")
     brief_id = hist.add_brief(REPO, "v2.1", "v2.1 (stable)", "Reads BMW CarData.")
     hist.decide_brief(brief_id, approved=True)
-    seen = {}
-
-    def fake_chat(cfg, model, system, user, **kwargs):
-        seen.update(model=model, system=system, user=user, **kwargs)
-        return json.dumps({"reply": "Same as #3: please update.", "note": "Looks like #3."})
-
-    monkeypatch.setattr(llm, "chat", fake_chat)
+    model.verdicts = [
+        verdict(
+            category="duplicate",
+            confidence="high",
+            evidence=[
+                {"source": "#3", "quote": "Fixed in v2.1,", "point": "the same was fixed"},
+                {"source": "thread", "quote": "My SoC  stays at 80", "point": "the symptom"},
+            ],
+        )
+    ]
+    model.reply = {"reply": "Same as #3: please update.", "note": "Looks like #3."}
     add_draft(store)
     result = drafts.generate(agent_cfg, store.claim_draft(), hist, tmp_path)
 
-    assert result == drafts.Result(
-        "Same as #3: please update.", "Looks like #3.", "no file attached"
+    assert [kind for kind, _ in model.calls] == ["assess", "reply"]
+    assert (result.reply, result.note, result.attachments) == (
+        "Same as #3: please update.",
+        "Looks like #3.",
+        "no file attached",
     )
-    assert seen["model"] == "big:120b" and seen["schema"] == drafts.SCHEMA
-    assert "Reads BMW CarData." in seen["system"]
-    assert "Always ask for the integration version." in seen["system"]
-    assert "My SoC stays at 80 %." not in seen["system"]  # strangers' text: user message only
-    assert "NEWEST: answer this\nMy SoC stays at 80 %." in seen["user"]
-    assert "#3 [issue, completed] SoC stuck after update" in seen["user"]
-    assert "Maintainer answered: Fixed in v2.1, please update." in seen["user"]
+    assert result.verdict.category == "duplicate"
+    assert all(e.verified for e in result.verdict.evidence)  # whitespace and case don't count
+
+    ((system, user),) = model.prompts("assess")
+    assert "Reads BMW CarData." in system and "Always ask for the integration version." in system
+    assert "My SoC stays at 80 %." not in system  # strangers' text: user message only
+    assert "NEWEST: answer this\nMy SoC stays at 80 %." in user
+    assert "#3 [issue, completed] SoC stuck after update" in user
+    assert "Maintainer answered: Fixed in v2.1, please update." in user
+
+    ((system, user),) = model.prompts("reply")
+    assert "Build the reply on the assessment" in system and "Reads BMW CarData." in system
+    assert "Category: duplicate (confidence: high)" in user
+    assert '- [#3, checked] "Fixed in v2.1,": the same was fixed' in user
+
+
+def test_quotes_not_in_their_source_go_back_for_correction(agent_cfg, store, hist, tmp_path, model):
+    put_issue(hist)
+    invented = {"source": "thread", "quote": "rc=5 at 14:00", "point": "made up"}
+    model.verdicts = [
+        verdict(evidence=[invented]),
+        verdict(evidence=[invented]),
+        verdict(evidence=[invented]),
+    ]
+    add_draft(store)
+    result = drafts.generate(agent_cfg, store.claim_draft(), hist, tmp_path)
+    assert [k for k, _ in model.calls] == ["assess"] * (analysis.RETRIES + 1) + ["reply"]
+    correction = model.prompts("assess")[1][1]
+    assert "not in their sources" in correction and '[thread] "rc=5 at 14:00"' in correction
+    assert result.verdict.attempts == analysis.RETRIES + 1
+    assert [e.verified for e in result.verdict.evidence] == [False]
+    assert "[thread, unverified]" in model.prompts("reply")[0][1]
+
+
+def test_a_corrected_quote_stops_the_retries(agent_cfg, store, hist, tmp_path, model):
+    put_issue(hist)
+    model.verdicts = [
+        verdict(evidence=[{"source": "thread", "quote": "SoC is 0", "point": "x"}]),
+        verdict(evidence=[{"source": "diag.json", "quote": "stays at 80 %", "point": "x"}]),
+    ]
+    add_draft(store)
+    result = drafts.generate(agent_cfg, store.claim_draft(), hist, tmp_path)
+    assert result.verdict.attempts == 2
+    # Found, though not where the model said: the real source is recorded.
+    assert [(e.source, e.verified) for e in result.verdict.evidence] == [("thread", True)]
+
+
+def test_a_failed_or_unusable_assessment_means_no_draft(agent_cfg, store, hist, tmp_path, model):
+    put_issue(hist)
+    add_draft(store)
+    draft = store.claim_draft()
+    model.verdicts = ["not json"]
+    assert drafts.generate(agent_cfg, draft, hist, tmp_path) is None
+    model.verdicts, model.fail = [verdict()], "assess"
+    assert drafts.generate(agent_cfg, draft, hist, tmp_path) is None
+    model.fail = "reply"
+    assert drafts.generate(agent_cfg, draft, hist, tmp_path) is None
 
 
 FORM_BODY = (
@@ -439,7 +553,7 @@ def thread_with(body: str, *comments: tuple[str, str]) -> dict:
 
 
 def test_a_ticked_box_without_a_file_is_caught():
-    files = drafts.gather(thread_with(FORM_BODY), REPO, None, 10_000)
+    files = drafts.gather(thread_with(FORM_BODY), REPO, None)
     assert files.links == []
     assert drafts.checked_text(files) == (
         "Nothing is attached anywhere in this thread.\n"
@@ -447,7 +561,7 @@ def test_a_ticked_box_without_a_file_is_caught():
         " but no file is attached."
     )
     assert drafts.attachment_summary(files) == "no file attached (though a box says so)"
-    plain = drafts.gather(thread_with("no form"), REPO, None, 10_000)
+    plain = drafts.gather(thread_with("no form"), REPO, None)
     assert drafts.attachment_summary(plain) == "no file attached"
 
 
@@ -469,33 +583,52 @@ def test_files_and_images_are_found_anywhere_in_the_thread(tmp_path):
     saved = attachments.path_for(tmp_path, REPO, attachments.links(thread)[1])
     saved.parent.mkdir(parents=True)
     saved.write_text('{\n  "rc": 5\n}', encoding="utf-8")
-    files = drafts.gather(thread, REPO, tmp_path, 10_000)
+    files = drafts.gather(thread, REPO, tmp_path)
     assert files.texts == {"123": '{"rc":5}'}
     checked = drafts.checked_text(files)
-    assert "- bmw_diag.json (by helper): included below" in checked
+    assert "- bmw_diag.json (by helper): its contents are below" in checked
     assert "- home-assistant.log (by helper): you cannot see its contents" in checked
     assert "- 1 image(s) or video(s): you cannot see them" in checked
     assert "checkbox" not in checked
-    assert drafts.files_text(files) == '--- bmw_diag.json (by helper)\n{"rc":5}'
     assert drafts.attachment_summary(files) == (
         "home-assistant.log (not read), bmw_diag.json (read), 1 image(s)"
     )
     only_image = thread_with("see https://github.com/user-attachments/assets/ff")
-    summary = drafts.attachment_summary(drafts.gather(only_image, REPO, None, 10_000))
+    summary = drafts.attachment_summary(drafts.gather(only_image, REPO, None))
     assert summary == "no file attached, 1 image(s)"
 
 
-def test_files_share_the_budget_newest_upload_first(tmp_path, monkeypatch):
-    monkeypatch.setattr(drafts, "MIN_FILE_TEXT", 20)
+def test_files_go_in_whole_while_they_fit_the_rest_as_findings(agent_cfg, tmp_path, model):
     thread = thread_with(f"old {LOG}", ("stranger", f"new {DIAG}"))
     old, new = attachments.links(thread)
-    for link, text in ((old, "L" * 100), (new, "D" * 60)):
+    log = "\n".join(f"line {i}: ok" for i in range(40)) + "\nERROR rc=5 not authorized\n"
+    for link, text in ((old, log), (new, "D" * 60)):
         target = attachments.path_for(tmp_path, REPO, link)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text, encoding="utf-8")
-    files = drafts.gather(thread, REPO, tmp_path, 70)
-    assert files.texts == {"123": "D" * 60}  # 10 left: the older log doesn't fit
-    assert [link.file_id for link in files.unread] == ["9"]
+    files = drafts.gather(thread, REPO, tmp_path)
+    model.findings = [
+        {"quote": "ERROR rc=5 not authorized", "point": "the broker refuses"},
+        {"quote": "ERROR rc=7", "point": "invented, not in the file"},
+    ]
+    # Room for the newest file whole; the older, bigger log gets read in parts.
+    text = drafts.file_sections(agent_cfg, files, "SoC stuck", 200, lambda _: None)
+    assert "--- bmw_diag.json (by stranger)\n" + "D" * 60 in text
+    assert "home-assistant.log (by stranger): too big to include whole" in text
+    assert '- "ERROR rc=5 not authorized": the broker refuses' in text
+    assert "rc=7" not in text  # a quote not in its part is dropped
+    ((system, user),) = model.prompts("findings")
+    assert system == analysis.FINDINGS_SYSTEM
+    assert user.startswith("The problem:\nSoC stuck\n\n===== home-assistant.log, part 1 of 1")
+
+
+def test_big_files_are_read_in_parts_cut_at_line_ends():
+    text = "".join(f"{i:03d} line\n" for i in range(100))  # 9 characters a line
+    parts = analysis.chunks(text, 100)
+    assert "".join(parts) == text
+    assert all(len(p) <= 100 and p.endswith("\n") for p in parts)
+    assert analysis.chunks("x" * 250, 100) == ["x" * 100, "x" * 100, "x" * 50]
+    assert analysis.chunks("", 100) == []
 
 
 @pytest.mark.parametrize(
@@ -529,18 +662,11 @@ def test_replies_that_only_mention_a_file_are_not_flagged(reply):
 
 
 def test_a_draft_claiming_to_have_read_the_attachment_gets_a_warning(
-    agent_cfg, store, hist, tmp_path, monkeypatch
+    agent_cfg, store, hist, tmp_path, model
 ):
     put_issue(hist)
     put_comment(hist, 1, 7, f"[diag.json]({DIAG}) please find the log attached")
-    answers = iter(["The diagnostics show BMW rejects the login.", "Your file is fine."])
-    seen = {}
-
-    def fake_chat(cfg, model, system, user, **kwargs):
-        seen["system"] = system
-        return json.dumps({"reply": next(answers), "note": "n"})
-
-    monkeypatch.setattr(llm, "chat", fake_chat)
+    model.reply = {"reply": "The diagnostics show BMW rejects the login.", "note": "n"}
     add_draft(store)
     draft = store.claim_draft()
     # Not downloaded: the model only knows the name.
@@ -548,29 +674,34 @@ def test_a_draft_claiming_to_have_read_the_attachment_gets_a_warning(
     assert result.note.startswith("⚠️ Sounds as if it read an attached file it couldn't open")
     assert result.note.endswith(" n")
     assert result.attachments == "bmw_diag.json (not read)"
-    assert "Every other attachment you cannot open" in seen["system"]
+    assert "you cannot see its contents" in model.prompts("assess")[0][1]
+    model.reply = {"reply": "Your file is fine.", "note": "n"}
     assert drafts.generate(agent_cfg, draft, hist, tmp_path).note == "n"
 
 
-def test_downloaded_files_go_to_the_model(agent_cfg, store, hist, tmp_path, monkeypatch):
+def test_downloaded_files_go_to_the_assessment_as_checkable_sources(
+    agent_cfg, store, hist, tmp_path, model
+):
     put_issue(hist)
     put_comment(hist, 1, 7, f"[diag.json]({DIAG}) please find the log attached")
     (link,) = attachments.links(hist.thread(REPO, 7))
     target = attachments.path_for(tmp_path / "files", REPO, link)
     target.parent.mkdir(parents=True)
     target.write_text('{"mqtt": {"rc": 5}}', encoding="utf-8")
-    seen = {}
-
-    def fake_chat(cfg, model, system, user, **kwargs):
-        seen["user"] = user
-        return json.dumps({"reply": "The diagnostics show rc=5.", "note": "n"})
-
-    monkeypatch.setattr(llm, "chat", fake_chat)
+    model.verdicts = [
+        verdict(
+            category="upstream",
+            evidence=[{"source": "bmw_diag.json", "quote": '"rc": 5', "point": "refused"}],
+        )
+    ]
+    model.reply = {"reply": "The diagnostics show rc=5.", "note": "n"}
     add_draft(store)
     result = drafts.generate(agent_cfg, store.claim_draft(), hist, tmp_path, tmp_path / "files")
-    assert "===== Attached files =====\n--- bmw_diag.json (by stranger)\n" in seen["user"]
-    assert '{"mqtt":{"rc":5}}' in seen["user"]
-    assert "bmw_diag.json (by stranger): included below" in seen["user"]
+    user = model.prompts("assess")[0][1]
+    assert "===== Attached files =====\n--- bmw_diag.json (by stranger)\n" in user
+    assert '{"mqtt":{"rc":5}}' in user
+    assert "bmw_diag.json (by stranger): its contents are below" in user
+    assert [(e.source, e.verified) for e in result.verdict.evidence] == [("bmw_diag.json", True)]
     assert result.note == "n"  # it did read it: no warning
     assert result.attachments == "bmw_diag.json (read)"
 
@@ -617,14 +748,6 @@ def test_download_keeps_text_skips_the_rest_and_sends_no_token(tmp_path, monkeyp
     assert "1/f1.txt" not in " ".join(r.full_url for r in requests)  # not fetched twice
 
 
-def test_long_files_keep_their_start_and_their_end():
-    text = "HEAD" + "m" * 1000 + "LATEST ERROR"
-    fitted = attachments.fit(text, 200)
-    assert len(fitted) <= 200 and fitted.startswith("HEAD") and fitted.endswith("LATEST ERROR")
-    assert "characters left out" in fitted
-    assert attachments.fit("short", 200) == "short"
-
-
 def test_the_watcher_downloads_attachments_when_queueing_a_draft(
     agent_cfg, store, hist, tmp_path, monkeypatch
 ):
@@ -647,13 +770,10 @@ def test_the_watcher_downloads_attachments_when_queueing_a_draft(
     assert len(store.drafts("queued")) == 2  # a draft even without the files
 
 
-def test_without_a_file_a_reading_claim_is_not_flagged(
-    agent_cfg, store, hist, tmp_path, monkeypatch
-):
+def test_without_a_file_a_reading_claim_is_not_flagged(agent_cfg, store, hist, tmp_path, model):
     # Pasted into the thread, a log is text the model really read.
     put_issue(hist, body="Log:\nERROR rc=5")
-    reply = json.dumps({"reply": "Your log shows rc=5.", "note": "n"})
-    monkeypatch.setattr(llm, "chat", lambda *a, **k: reply)
+    model.reply = {"reply": "Your log shows rc=5.", "note": "n"}
     add_draft(store)
     assert drafts.generate(agent_cfg, store.claim_draft(), hist, tmp_path).note == "n"
 
@@ -677,29 +797,21 @@ def test_issue_templates_are_read_without_the_config(tmp_path):
     assert snapshot.issue_templates(tmp_path / "missing") == []
 
 
-def test_generate_tells_the_model_what_is_really_attached(
-    agent_cfg, store, hist, tmp_path, monkeypatch
-):
+def test_generate_tells_the_model_what_is_really_attached(agent_cfg, store, hist, tmp_path, model):
     put_issue(hist, body=FORM_BODY)
     form = tmp_path / "owner" / "repo" / ".github" / "ISSUE_TEMPLATE" / "bug_report.yml"
     form.parent.mkdir(parents=True)
     form.write_text("Download diagnostics from the ⋮ menu.", encoding="utf-8")
-    seen = {}
-
-    def fake_chat(cfg, model, system, user, **kwargs):
-        seen.update(system=system, user=user)
-        return json.dumps({"reply": "Please attach the diagnostics.", "note": "none attached"})
-
-    monkeypatch.setattr(llm, "chat", fake_chat)
     add_draft(store)
     result = drafts.generate(agent_cfg, store.claim_draft(), hist, tmp_path)
 
     assert result.attachments == "no file attached (though a box says so)"
-    assert "Download diagnostics from the ⋮ menu." in seen["system"]
-    assert seen["user"].startswith(
-        "===== Checked by Watchtower =====\nNothing is attached anywhere in this thread.\n"
-        "The opening post has a ticked checkbox"
-    )
+    for system, user in model.prompts("assess") + model.prompts("reply"):
+        assert "Download diagnostics from the ⋮ menu." in system
+        assert user.startswith(
+            "===== Checked by Watchtower =====\nNothing is attached anywhere in this thread.\n"
+            "The opening post has a ticked checkbox"
+        )
 
 
 def test_store_adds_attachments_to_an_old_draft_table(tmp_path):
@@ -723,21 +835,10 @@ def test_store_adds_attachments_to_an_old_draft_table(tmp_path):
     store.close()
 
 
-def test_generate_without_the_thread_or_with_a_failing_model(
-    agent_cfg, store, hist, tmp_path, monkeypatch
-):
+def test_generate_without_the_thread_makes_no_call(agent_cfg, store, hist, tmp_path, model):
     add_draft(store)
-    draft = store.claim_draft()
-    monkeypatch.setattr(llm, "chat", lambda *a, **k: pytest.fail("no thread, no call"))
-    assert drafts.generate(agent_cfg, draft, hist, tmp_path) is None
-
-    put_issue(hist)
-
-    def boom(*args, **kwargs):
-        raise TimeoutError
-
-    monkeypatch.setattr(llm, "chat", boom)
-    assert drafts.generate(agent_cfg, draft, hist, tmp_path) is None
+    assert drafts.generate(agent_cfg, store.claim_draft(), hist, tmp_path) is None
+    assert model.calls == []
 
 
 # -- the drafter --------------------------------------------------------------------------
@@ -746,13 +847,37 @@ def test_generate_without_the_thread_or_with_a_failing_model(
 def test_drafter_offers_the_draft_with_buttons_and_takes_replies(
     agent_cfg, store, hist, tmp_path, monkeypatch
 ):
-    result = drafts.Result("Which <version>?", "asks", "diag.json")
-    monkeypatch.setattr(drafts, "generate", lambda *a: result)
+    judged = analysis.parse_verdict(
+        json.dumps(
+            verdict(
+                category="our_bug",
+                evidence=[{"source": "thread", "quote": "SoC <stuck>", "point": "it's stuck"}],
+                code="the charging sensor",
+                fix="keep the last value",
+            )
+        ),
+        {"thread": "SoC <stuck> at 80"},
+    )
+    result = drafts.Result("Which <version>?", "asks", "diag.json", judged)
+    steps = []
+
+    def fake_generate(cfg, draft, history, root, folder, *, beat):
+        beat("assessing")
+        steps.append(store.heartbeats()["drafter"][1])
+        return result
+
+    monkeypatch.setattr(drafts, "generate", fake_generate)
     add_draft(store)
     drafter.work(store.claim_draft(), agent_cfg, store, hist, tmp_path)
+    assert steps == ["owner/repo#7: assessing"]
 
-    (message,) = store.pending()
+    assessment, message = store.pending()
     (draft,) = store.drafts("ready")
+    assert analysis.Verdict.from_json(draft.verdict) == judged
+    assert assessment.silent and assessment.buttons == () and assessment.url == ISSUE_URL
+    assert "🧭 Assessment #7" in assessment.text and "🐞 our bug" in assessment.text
+    assert "✓ thread: «SoC &lt;stuck&gt;»" in assessment.text
+    assert "<b>Where</b>: the charging sensor" in assessment.text
     version = store.latest_version(draft.id)
     assert message.topic == "triage" and message.url == ISSUE_URL
     assert message.buttons == (
@@ -766,7 +891,7 @@ def test_drafter_offers_the_draft_with_buttons_and_takes_replies(
 
 
 def test_a_failed_draft_is_reported(agent_cfg, store, hist, tmp_path, monkeypatch):
-    monkeypatch.setattr(drafts, "generate", lambda *a: None)
+    monkeypatch.setattr(drafts, "generate", lambda *a, **k: None)
     add_draft(store)
     drafter.work(store.claim_draft(), agent_cfg, store, hist, tmp_path)
     (message,) = store.pending()
