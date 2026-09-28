@@ -250,7 +250,7 @@ def test_replay_cases_stop_before_the_first_maintainer_answer(hist):
     (case,) = evaluate.cases(hist, REPO)
     assert (case.number, case.cutoff, case.answer, case.outcome) == (
         7,
-        "2026-09-03T00:00:00Z",
+        "2026-09-02T00:00:01Z",  # just after the newest message, not at the answer
         "Fixed in v2",
         "completed",
     )
@@ -268,6 +268,14 @@ def test_replay_hides_what_came_later(agent_cfg, hist, tmp_path, model):
     put_comment(hist, 30, 3, "Try re-auth", association="OWNER", created="2026-09-02T00:00:00Z")
     put_comment(hist, 31, 3, "Fixed in v9", association="OWNER", created="2026-09-20T00:00:00Z")
     put_issue(hist, 12, title="SoC stuck at 80 later", created="2026-09-15T00:00:00Z")
+    # The maintainer released the fix, then answered: the draft can't have known it.
+    hist.put_releases(
+        REPO,
+        [
+            Release("v2.0", False, "2026-09-10T20:00:00Z", "Fix: SoC stuck at 80."),
+            Release("v1.9", False, "2026-09-05T00:00:00Z", "Older."),
+        ],
+    )
 
     outcomes = evaluate.run(
         agent_cfg,
@@ -281,6 +289,7 @@ def test_replay_hides_what_came_later(agent_cfg, hist, tmp_path, model):
     assert [o.case.number for o in outcomes] == [7]
     user = model.prompts("assess")[0][1]
     assert "Try re-auth" in user and "Fixed in v9" not in user and "#12" not in user
+    assert "v1.9" in user and "v2.0" not in user and "Fix: SoC stuck" not in user
 
 
 def test_replay_writes_a_report_after_every_issue(agent_cfg, hist, tmp_path, model):

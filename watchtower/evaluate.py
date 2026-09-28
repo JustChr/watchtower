@@ -2,8 +2,9 @@
 
 Each closed issue that a stranger opened and a maintainer answered is cut just
 before the maintainer's first answer (labels removed, state "open"), and drafted
-as if it were new: ``drafts.generate`` with ``as_of``, so releases and earlier
-threads from later stay hidden. The report puts the model's assessment and reply
+as if it were new: ``drafts.generate`` with ``as_of`` set to when the newest
+message before that answer came, so releases and earlier threads from later
+(like the release that fixed it) stay hidden. The report puts the model's assessment and reply
 next to what really happened: the maintainer's first answer and how the issue
 was closed. Judging that is the user's part; the report is the evidence, and a
 rerun after a change shows whether it helped.
@@ -16,6 +17,7 @@ token), so it runs in the watcher container, from a shell:
 
 from __future__ import annotations
 
+import calendar
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -36,7 +38,9 @@ class Case:
     title: str
     thread: dict  # as it was just before the first maintainer answer
     newest_url: str
-    cutoff: str  # when that answer came
+    # When the draft would have been written: the newest message before the answer.
+    # (Not the answer's time: a maintainer often releases the fix, then answers.)
+    cutoff: str
     answer: str  # the maintainer's first answer
     outcome: str  # how the issue was closed
 
@@ -46,6 +50,13 @@ class Outcome:
     case: Case
     result: drafts.Result | None
     seconds: float
+
+
+def _later(stamp: str) -> str:
+    """An ISO time one second later (``as_of`` compares with ``<``)."""
+
+    seconds = calendar.timegm(time.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ")) + 1
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(seconds))
 
 
 def cases(history: History, repo: str, numbers: Sequence[int] = ()) -> list[Case]:
@@ -59,13 +70,15 @@ def cases(history: History, repo: str, numbers: Sequence[int] = ()) -> list[Case
             continue
         before = [c for c in thread["comments"] if c["created"] < first["created"]]
         as_it_was = {**thread, "state": "open", "labels": "", "comments": before}
+        newest = before[-1] if before else thread
         found.append(
             Case(
                 number=number,
                 title=thread["title"],
                 thread=as_it_was,
-                newest_url=before[-1]["url"] if before else thread["url"],
-                cutoff=first["created"],
+                newest_url=newest["url"],
+                # A second later: what was there when the newest message arrived.
+                cutoff=_later(newest["created"]),
                 answer=first["body"],
                 outcome=thread["state"],
             )
