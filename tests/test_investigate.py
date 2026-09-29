@@ -228,6 +228,41 @@ def test_the_loop_runs_tool_calls_until_the_model_stops(agent_cfg, hist, code, m
     assert "thinking" in model.acts[1][2]  # but the model saw its last thinking
 
 
+def test_judging_before_looking_gets_one_nudge(agent_cfg, hist, code, model):
+    # #160: asked to investigate, gpt-oss answered with the final JSON at once.
+    model.turns = [
+        {"content": '{"category": "contribution"}'},
+        {"tool_calls": [call("search_code", text="refresh")]},
+        {"content": "Checked: coordinator.py:3 refreshes one car."},
+    ]
+    messages = start()
+    assert investigate.run(agent_cfg, messages, workspace(hist, code), 100_000) == 1
+    assert [m["role"] for m in messages] == [
+        "system",
+        "user",
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+    ]
+    assert messages[2]["content"] == investigate.NUDGE  # its premature answer dropped
+    assert "contribution" not in investigate.transcript(messages[2:])
+
+    model.turns = []  # it never looks: nudged once, then it's over
+    model.acts.clear()
+    assert investigate.run(agent_cfg, start(), workspace(hist, code), 100_000) == 0
+    assert len(model.acts) == 2
+
+
+def test_the_draft_asks_to_investigate_first(agent_cfg, store, hist, tmp_path, model):
+    put_issue(hist)
+    add_draft(store)
+    drafts.generate(agent_cfg, store.claim_draft(), hist, tmp_path)
+    assert model.acts[0][1]["content"].endswith(investigate.FIRST_ASK)
+    ((_, final),) = [m for k, m in model.calls if k == "assess"]
+    assert investigate.FIRST_ASK not in final["content"]
+
+
 def test_the_loop_is_bounded(agent_cfg, hist, code, model):
     cfg = dataclasses.replace(agent_cfg, agent_steps=3)
     model.turns = [{"tool_calls": [call("list_files")] * 7} for _ in range(10)]

@@ -727,6 +727,7 @@ def generate(
     messages = [{"role": "system", "content": system}, {"role": "user", "content": question}]
 
     if cfg.agent_steps:
+        messages[1]["content"] += f"\n\n{investigate.FIRST_ASK}"
 
         def investigating() -> dict:
             investigate.run(cfg, messages, workspace, capacity, beat)

@@ -89,6 +89,20 @@ FINAL_ASK = (
     ' and "fix" name files as path:line.'
 )
 NO_CODE = "No code is available: judge from the thread, the files and the history."
+# The end of the question while investigating: gpt-oss, told to "answer with JSON
+# only", otherwise tends to judge at once (#160: a design question with claims about
+# the code, judged with 0 lookups).
+FIRST_ASK = (
+    "Investigate first, with the tools, as the instructions say. The final JSON comes"
+    " later, when you are asked for it."
+)
+# Once, when the first turn looks nothing up: its answer is dropped.
+NUDGE = (
+    "You answered without looking anything up. Don't judge yet. First check with the"
+    " tools what the messages say or assume about the code, the attached files or"
+    " earlier threads: every file, function, setting or behaviour they name, and what"
+    " the author's case depends on. The final JSON comes later, when you are asked."
+)
 
 
 def _tool(name: str, description: str, params: dict[str, tuple[str, str]], required: list[str]):
@@ -581,6 +595,7 @@ def run(
 
     tools = workspace.tools()
     rounds = 0
+    nudged = False
     done: dict[str, dict] = {}  # a result -> the message that holds it
     for step in range(1, cfg.agent_steps + 1):
         if not fit(messages, limit):
@@ -609,6 +624,10 @@ def run(
         if calls:
             message["tool_calls"] = calls
         messages.append(message)
+        if not calls and rounds == 0 and not nudged:
+            nudged = True
+            messages[-1] = {"role": "user", "content": NUDGE}  # judged before looking
+            continue
         if not calls:
             break
         rounds += 1
