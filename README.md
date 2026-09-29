@@ -55,7 +55,14 @@ Every `history_minutes` the watcher refreshes, per repo:
 | **History:** every issue, PR, discussion and comment, full-text searchable | `/data/history.db` | Strangers' text: data only. GitHub's `author_association` marks what maintainers wrote. |
 | **Code snapshot:** the default branch, downloaded as a tarball when its head commit changes | `/data/repos/<owner>/<name>` | What the maintainers merged. Unpacked safely: size and file-count limits, nothing outside the folder, no links pointing out. |
 | **Repo docs:** `CLAUDE.md`/`AGENTS.md`, README, CONTRIBUTING, `.claude/skills/*/SKILL.md`, `docs/**/*.md` | from the snapshot | The maintainers' own words. |
+| **Your notes:** `docs/knowledge/*.md` in the watched repo, one topic per file: facts the code doesn't state (how the service behaves, its limits, known quirks) | the default branch's snapshot, always the newest | Yours: trusted, and ranked above the brief and the model's guesses. |
 | **Repo brief:** what the project is, current stable and beta, architecture, what it supports, common problems, how issues are handled. `agent_model` writes it from the docs at the release's tag, its release notes, the recent releases and the file tree | `/data/history.db` | Model output: used **only after you approve it** in ⚙️ System (✅ Use it / 🗑 Discard). |
+
+**Drafts** get your notes and the repo's docs whole, as far as a share of the
+context allows (notes first; docs at the version the author runs, so a replay
+can't read about a later fix); what doesn't fit, the model can search and read
+while investigating. A wrong or weak draft that needed knowledge you have is
+the cue for a new note.
 
 Summaries get the approved brief as background. Until one is approved, they
 get the README's opening. **Each new release gets a new brief**: betas too,

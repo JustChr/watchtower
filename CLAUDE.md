@@ -29,6 +29,9 @@ end-to-end locally.
     read-only tools (code at the author's version, which the watcher fetches
     into `/data/repos/.versions/`; attached files; history), bounded by
     `agent_steps`; tool arguments are untrusted, paths confined to the copy.
+    Repo knowledge in drafts: the maintainer's notes (`docs/knowledge/*.md`
+    in the watched repo, from the default branch) and the repo's docs (at
+    the judged version), whole within `DOCS_SHARE`, the rest via `search_docs`.
   - `poster.py` — the only GitHub writer: holds the App key (`github_app.py`),
     applies draft decisions, posts exactly the approved version; no model.
   - `gateway.py` — the only Telegram client (a bot allows one `getUpdates`

@@ -399,6 +399,87 @@ def test_a_draft_cut_off_after_investigating_resumes_there(agent_cfg, store, his
     assert set(result.seconds) == {"files", "investigation", "assessment", "reply"}
 
 
+NOTE = "Door lock status is not streamable: BMW refreshes it only over REST."
+
+
+def test_notes_come_from_the_default_branch_and_docs_from_the_judged_version(
+    agent_cfg, store, hist, tmp_path, model
+):
+    put_issue(hist, body=FORM)
+    hist.put_releases(REPO, RELEASES)
+    main = snapshot.path_for(tmp_path, REPO)
+    for name, text in {
+        "docs/knowledge/bmw.md": NOTE,
+        "docs/setup.md": "On main: 0.9.15 fixed it.",
+    }.items():
+        (main / name).parent.mkdir(parents=True, exist_ok=True)
+        (main / name).write_text(text)
+    copy_at(
+        tmp_path,
+        "v0.9.14-beta.3",
+        {"README.md": "Readme at beta 3.", "docs/knowledge/old.md": "An old note."},
+    )
+    model.verdicts = [
+        verdict(
+            category="upstream",
+            evidence=[
+                {"source": "docs/knowledge/bmw.md", "quote": "is not streamable", "point": "BMW"}
+            ],
+        )
+    ]
+    add_draft(store)
+    result = drafts.generate(agent_cfg, store.claim_draft(), hist, tmp_path)
+
+    for system in (model.acts[0][0]["content"], model.prompts("reply")[0][0]):
+        assert f"===== docs/knowledge/bmw.md =====\n{NOTE}" in system  # newest notes
+        assert "Readme at beta 3." in system  # docs of the version the author runs
+        assert "0.9.15 fixed it" not in system and "An old note." not in system
+    assert result.verdict.evidence[0].verified  # a note is a source
+
+
+def test_knowledge_puts_notes_first_and_names_what_does_not_fit():
+    notes = [("docs/knowledge/a.md", "A" * 10)]
+    docs = [("README.md", "R" * 10), ("docs/big.md", "B" * 100)]
+    text = drafts.knowledge(notes, docs, 80, lookups=True)
+    assert text.index("A" * 10) < text.index("R" * 10) and "B" * 100 not in text
+    assert text.endswith("More notes and docs, readable with read_doc: docs/big.md")
+    assert drafts.knowledge(notes, docs, 80, lookups=False).endswith(
+        "left out for room: docs/big.md"
+    )
+    assert drafts.knowledge([], [], 70, lookups=True) == ""
+
+
+def test_doc_tools(hist):
+    docs = {"docs/knowledge/bmw.md": "BMW\nLock status is not streamable."}
+    ws = workspace(hist, docs=docs)
+    assert "search_docs" in [t["function"]["name"] for t in ws.tools()]
+    assert ws.run("search_docs", {"text": "STREAMABLE"}) == (
+        "docs/knowledge/bmw.md:2: Lock status is not streamable."
+    )
+    assert ws.read == docs
+    assert ws.run("read_doc", {"path": "docs/knowledge/bmw.md", "start_line": 2}).endswith(
+        "2: Lock status is not streamable."
+    )
+    assert ws.run("read_doc", {"path": "../../etc/passwd"}).startswith("No note or doc")
+    again = workspace(hist, docs=docs)
+    again.restore(["docs/knowledge/bmw.md"])
+    assert again.read == docs
+    assert "search_docs" not in [t["function"]["name"] for t in workspace(hist).tools()]
+
+
+def test_notes_are_the_markdown_files_in_the_notes_folder(tmp_path):
+    for name in ("docs/knowledge/b.md", "docs/knowledge/a.md", "docs/knowledge/sub/c.md"):
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text(name)
+    (tmp_path / "docs/knowledge/x.txt").write_text("not a note")
+    assert [path for path, _ in snapshot.notes(tmp_path)] == [
+        "docs/knowledge/a.md",
+        "docs/knowledge/b.md",
+        "docs/knowledge/sub/c.md",
+    ]
+    assert snapshot.notes(tmp_path / "missing") == []
+
+
 def test_restore_keeps_to_the_code_copy(hist, code):
     ws = workspace(hist, code)
     ws.restore(

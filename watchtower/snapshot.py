@@ -47,6 +47,9 @@ TOP_DOCS = (
     "contributing.md",
 )
 
+# The maintainers' notes in a watched repo: one topic per Markdown file.
+NOTES_DIR = "docs/knowledge"
+
 VERSIONS = ".versions"  # under the repos root: copies at release tags
 KEEP_VERSIONS = 6
 
@@ -204,6 +207,21 @@ def trusted_docs(target: Path, budget: int = DOCS_BUDGET) -> list[tuple[str, str
             docs.append((path.relative_to(target).as_posix(), text))
             budget -= len(text)
     return docs
+
+
+def notes(target: Path) -> list[tuple[str, str]]:
+    """``(path, text)`` of the maintainers' notes (``NOTES_DIR/**/*.md``): facts about
+    the project and the services it uses that its code doesn't state."""
+
+    folder = target / NOTES_DIR
+    if not folder.is_dir():
+        return []
+    found = [(p, _read(p, MAX_DOC)) for p in sorted(folder.rglob("*.md"))]
+    return [(p.relative_to(target).as_posix(), text) for p, text in found if text]
+
+
+def is_note(path: str) -> bool:
+    return path.startswith(NOTES_DIR + "/")
 
 
 def skill(target: Path, name: str, limit: int = MAX_DOC) -> str:

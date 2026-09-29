@@ -68,6 +68,11 @@ SIMILAR = 4
 MAX_EXAMPLE = 1200
 # The part of the assessment's context kept free for investigating with tools.
 INVESTIGATION_SHARE = 0.4
+# The part of the context for the maintainers' notes and docs, whole; the rest can
+# be looked up (``investigate``).
+DOCS_SHARE = 0.15
+# Docs the lookups can read: all of them (each capped by ``snapshot.MAX_DOC``).
+ALL_DOCS = 1_000_000
 # Kept free after investigating, for the final answer and its corrections.
 ASSESSMENT_ROOM = 4000
 
@@ -406,6 +411,53 @@ def background(context: str, guidelines: str, templates: Sequence[tuple[str, str
     return text
 
 
+TRIAGE_SKILL = ".claude/skills/triage/SKILL.md"  # in every prompt already (``background``)
+
+
+def project_docs(code: Path | None) -> list[tuple[str, str]]:
+    """The project's docs in ``code`` (not the notes, not the triage skill)."""
+
+    if code is None:
+        return []
+    return [
+        (path, text)
+        for path, text in snapshot.trusted_docs(code, ALL_DOCS)
+        if not snapshot.is_note(path) and path != TRIAGE_SKILL
+    ]
+
+
+def knowledge(
+    notes: Sequence[tuple[str, str]], docs: Sequence[tuple[str, str]], room: int, lookups: bool
+) -> str:
+    """The maintainers' notes, then the project's docs, whole while they fit in
+    ``room`` characters; the rest only named (readable with ``read_doc``)."""
+
+    text, rest = "", []
+    for intro, items in (
+        (
+            "The maintainers' notes: facts about the project and the services it depends on"
+            " that its code doesn't state. Rely on them over the brief, the thread and your"
+            " own guesses.",
+            notes,
+        ),
+        ("The project's docs, at the version being judged.", docs),
+    ):
+        shown = ""
+        for path, body in items:
+            part = f"\n===== {path} =====\n{body}"
+            if len(part) <= room:
+                shown += part
+                room -= len(part)
+            else:
+                rest.append(path)
+        if shown:
+            text += f"\n\n{intro}{shown}"
+    if rest:
+        how = "readable with read_doc" if lookups else "left out for room"
+        text += f"\n\nMore notes and docs, {how}: {', '.join(rest)}"
+    return text
+
+
 def _section(title: str, body: str) -> list[str]:
     return ["", f"===== {title} =====", body] if body else []
 
@@ -614,11 +666,6 @@ def generate(
         return done
 
     copy = snapshot.path_for(root, draft.repo)
-    known = background(
-        brief.project_context(history, draft.repo, root),
-        snapshot.skill(copy, "triage"),
-        snapshot.issue_templates(copy),
-    )
     files = gather(thread, draft.repo, folder)
     found = versions.reported(thread["body"], files.named())
     version_lines, notes = versions.facts(found, history.releases(draft.repo), as_of)
@@ -629,10 +676,26 @@ def generate(
     code, code_label = code_copy(
         root, draft.repo, versions.code_release(found, history.releases(draft.repo), as_of), as_of
     )
-    workspace = investigate.Workspace(
-        history, draft.repo, draft.number, code, code_label, files.named(), as_of
-    )
     capacity = analysis.capacity(cfg)
+    # The notes from the default branch: the newest knowledge, whatever the version.
+    # The docs from the copy being judged: a replay mustn't read about a later fix.
+    maintainers_notes = snapshot.notes(copy)
+    docs = project_docs(code)
+    known = background(
+        brief.project_context(history, draft.repo, root),
+        snapshot.skill(copy, "triage"),
+        snapshot.issue_templates(copy),
+    ) + knowledge(maintainers_notes, docs, int(capacity * DOCS_SHARE), bool(cfg.agent_steps))
+    workspace = investigate.Workspace(
+        history,
+        draft.repo,
+        draft.number,
+        code,
+        code_label,
+        files.named(),
+        as_of,
+        docs=dict(docs) | dict(maintainers_notes),
+    )
     system = analysis.ASSESS_SYSTEM + known
     if cfg.agent_steps:
         system += workspace.system(cfg.agent_steps)
@@ -678,6 +741,7 @@ def generate(
 
     def assessing() -> dict | None:
         sources = {
+            **workspace.docs,
             **workspace.read,  # first: a file it read can't shadow the names below
             "thread": full_text(thread),
             "releases": notes,
