@@ -93,6 +93,11 @@ The draft's 📎 line shows each file as *read* or *not read*. The model is told
 it can't see files it didn't get; if a reply still sounds as if it read one,
 the draft carries a ⚠️ warning.
 
+A draft takes several passes (big files read in parts, an investigation with
+read-only tools, the 🧭 assessment, the reply). The assessment arrives as soon
+as it's done; each finished pass is kept, so a restart resumes the draft
+instead of starting over.
+
 The draft arrives in the item's topic, in a copyable block, with
 **✅ Post** / **🗑 Reject**:
 

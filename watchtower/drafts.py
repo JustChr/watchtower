@@ -8,7 +8,10 @@ first an **investigation** with read-only tools (``investigate``: the code at th
 author's version, the attached files, the history), then an **assessment** of the
 thread (``analysis``: category, evidence checked against its sources -- the code
 it read included -- what's missing, where the fault is), shown to the user on
-its own; then the **reply**, written from that assessment.
+its own; then the **reply**, written from that assessment. Each pass that
+finishes is kept (``Stages``; the worker keeps them in the store, and sends the
+assessment as soon as it's there): a draft cut off by a restart resumes after
+the last one instead of starting over.
 
 What the model gets:
 
@@ -39,6 +42,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import re
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -532,6 +536,25 @@ def code_copy(
 
 # -- the whole draft ------------------------------------------------------------------
 
+FILES = "files"
+INVESTIGATION = "investigation"
+ASSESSMENT = "assessment"
+
+
+class Stages:
+    """What a draft's finished passes left, by name (``FILES``, ``INVESTIGATION``,
+    ``ASSESSMENT``): a draft cut off by a restart resumes after the last one. Kept
+    in memory here (replays); the worker keeps them in the store."""
+
+    def __init__(self, done: dict[str, dict] | None = None) -> None:
+        self.done = dict(done or {})
+
+    def get(self, name: str) -> dict | None:
+        return self.done.get(name)
+
+    def put(self, name: str, data: dict) -> None:
+        self.done[name] = data
+
 
 @dataclass(frozen=True)
 class Result:
@@ -539,6 +562,7 @@ class Result:
     note: str
     attachments: str  # ``attachment_summary``, for the user
     verdict: Verdict
+    seconds: dict[str, float] = dataclasses.field(default_factory=dict)  # per pass
 
 
 def generate(
@@ -551,13 +575,16 @@ def generate(
     thread: dict | None = None,
     as_of: str | None = None,
     beat: Callable[[str], None] = _nothing,
+    stages: Stages | None = None,
 ) -> Result | None:
-    """A draft for ``draft``: assessment, then reply. ``None`` if the thread is unknown
-    or the model failed; ``Unfit`` if the message to answer is too long to read whole.
+    """A draft for ``draft``: files, investigation, assessment, then reply. ``None`` if
+    the thread is unknown or the model failed; ``Unfit`` if the message to answer is
+    too long to read whole.
 
-    ``root`` holds the code snapshots, ``folder`` the downloaded attachments. For
-    replaying an old issue (``evaluate``), ``thread`` is the thread as it was and
-    ``as_of`` hides releases and earlier threads from later.
+    ``root`` holds the code snapshots, ``folder`` the downloaded attachments. Each
+    pass that finishes is kept in ``stages``, and a pass found there isn't done
+    again. For replaying an old issue (``evaluate``), ``thread`` is the thread as it
+    was and ``as_of`` hides releases and earlier threads from later.
     """
 
     thread = thread or history.thread(draft.repo, draft.number)
@@ -569,6 +596,23 @@ def generate(
             f"the message to answer has {len(newest)} characters;"
             f" drafts read at most {MAX_NEWEST} whole"
         )
+    stages = stages if stages is not None else Stages()
+    seconds: dict[str, float] = {}
+
+    def stage(name: str, work: Callable[[], dict | None]) -> dict | None:
+        """The pass's kept result, else ``work()``'s, kept (unless it failed)."""
+
+        done = stages.get(name)
+        if done is None:
+            clock = time.monotonic()
+            done = work()
+            if done is None:
+                return None
+            done["seconds"] = time.monotonic() - clock
+            stages.put(name, done)
+        seconds[name] = done.get("seconds", 0.0)
+        return done
+
     copy = snapshot.path_for(root, draft.repo)
     known = background(
         brief.project_context(history, draft.repo, root),
@@ -597,21 +641,31 @@ def generate(
     if cfg.agent_steps:
         room -= int(capacity * INVESTIGATION_SHARE)
     problem = problem_text(thread, draft.url)
-    files_part = file_sections(cfg, files, problem, room, beat)
-    messages = [
-        {"role": "system", "content": system},
-        {"role": "user", "content": assessment_prompt(checked, notes, shown, files_part, earlier)},
-    ]
+    files_part = stage(FILES, lambda: {"text": file_sections(cfg, files, problem, room, beat)})
+    question = assessment_prompt(checked, notes, shown, files_part["text"], earlier)
+    messages = [{"role": "system", "content": system}, {"role": "user", "content": question}]
+
     if cfg.agent_steps:
-        investigate.run(cfg, messages, workspace, capacity, beat)
-        investigate.fit(messages, capacity - ASSESSMENT_ROOM)
+
+        def investigating() -> dict:
+            investigate.run(cfg, messages, workspace, capacity, beat)
+            investigate.fit(messages, capacity - ASSESSMENT_ROOM)
+            return {
+                "transcript": investigate.transcript(messages[2:]),
+                "steps": list(workspace.steps),
+                "read": sorted(workspace.read),
+            }
+
+        investigation = stage(INVESTIGATION, investigating)
+        workspace.steps[:] = investigation["steps"]
+        workspace.restore(investigation["read"])  # resumed: what it read, read again
         # One question again, the investigation in it as text (see ``transcript``).
-        found = investigate.transcript(messages[2:]) or "(nothing)"
         question = "\n".join(
             [
-                messages[1]["content"],
+                question,
                 *_section(
-                    "What you found investigating (your tool calls and their results)", found
+                    "What you found investigating (your tool calls and their results)",
+                    investigation["transcript"] or "(nothing)",
                 ),
                 "",
                 investigate.FINAL_ASK,
@@ -621,23 +675,32 @@ def generate(
             {"role": "system", "content": analysis.ASSESS_SYSTEM + known},
             {"role": "user", "content": question},
         ]
-    sources = {
-        **workspace.read,  # first: a file it read can't shadow the names below
-        "thread": full_text(thread),
-        "releases": notes,
-        **files.named(),
-        **earlier_sources,
-    }
-    verdict = analysis.assess(cfg, messages, sources, beat, newest)
-    if verdict is None:
+
+    def assessing() -> dict | None:
+        sources = {
+            **workspace.read,  # first: a file it read can't shadow the names below
+            "thread": full_text(thread),
+            "releases": notes,
+            **files.named(),
+            **earlier_sources,
+        }
+        verdict = analysis.assess(cfg, messages, sources, beat, newest)
+        if verdict is None:
+            return None
+        verdict = dataclasses.replace(
+            verdict,
+            looked_at=tuple(workspace.steps),
+            unknown_paths=tuple(investigate.unknown_paths(f"{verdict.code} {verdict.fix}", code)),
+        )
+        return {"verdict": verdict.to_json()}
+
+    assessed = stage(ASSESSMENT, assessing)
+    if assessed is None:
         return None
-    verdict = dataclasses.replace(
-        verdict,
-        looked_at=tuple(workspace.steps),
-        unknown_paths=tuple(investigate.unknown_paths(f"{verdict.code} {verdict.fix}", code)),
-    )
+    verdict = Verdict.from_json(assessed["verdict"])
 
     beat("writing the reply")
+    clock = time.monotonic()
     try:
         content = llm.chat(
             cfg,
@@ -651,6 +714,7 @@ def generate(
     except Exception as err:  # noqa: BLE001 -- a failed draft is reported, not retried
         _LOGGER.warning("draft %s#%d failed: %s", draft.repo, draft.number, type(err).__name__)
         return None
+    seconds["reply"] = time.monotonic() - clock
     parsed = parse(content, draft.repo)
     if parsed is None:
         _LOGGER.warning("draft %s#%d unusable: outside the schema", draft.repo, draft.number)
@@ -668,7 +732,7 @@ def generate(
             "⚠️ Sounds as if it read an attached file it couldn't open:"
             f" check what it says about the file. {note}"
         ).strip()
-    return Result(reply, _clip(note, MAX_NOTE), attachment_summary(files), verdict)
+    return Result(reply, _clip(note, MAX_NOTE), attachment_summary(files), verdict, seconds)
 
 
 def offer(store: Store, draft: Draft, version: Version, error: str = "") -> None:

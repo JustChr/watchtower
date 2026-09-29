@@ -190,6 +190,9 @@ def report(repo: str, cfg: Config, outcomes: Sequence[Outcome], started: str) ->
                 lines.append(f"- Looked at: {'; '.join(v.looked_at)}")
             if o.result.note:
                 lines.append(f"- Note: {o.result.note}")
+            if o.result.seconds:
+                passes = " · ".join(f"{k} {s / 60:.1f}" for k, s in o.result.seconds.items())
+                lines.append(f"- Minutes per pass: {passes}")
             lines += ["", "**Model's reply:**", "", _quote(o.result.reply)]
         state = "still open" if o.case.outcome == "open" else f"closed as {o.case.outcome}"
         lines += ["", f"**{o.case.answer_label}** ({state}):", "", _quote(o.case.answer)]

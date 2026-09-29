@@ -12,7 +12,9 @@ A draft moves: ``prep`` (worker: it needs one) → ``queued`` (watcher: thread,
 files and code fetched) → ``drafting`` → ``ready`` (worker) → ``posting`` →
 ``posted`` (poster), or → ``rejected`` / ``superseded`` (a newer draft for the
 same thread) / ``failed``. Each text the user could approve is a
-``draft_version``: the model's first, then each of the user's edits.
+``draft_version``: the model's first, then each of the user's edits. Each pass
+of the model's that finished is a ``draft_stage``: a draft cut off by a restart
+goes back to ``queued`` and resumes after the last one.
 """
 
 from __future__ import annotations
@@ -77,6 +79,13 @@ CREATE TABLE IF NOT EXISTS draft (
     verdict TEXT NOT NULL DEFAULT '',     -- the assessment (analysis.Verdict as JSON)
     created REAL NOT NULL,
     updated REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS draft_stage (
+    draft INTEGER NOT NULL,
+    name TEXT NOT NULL,              -- a finished pass: files, investigation, assessment
+    data TEXT NOT NULL,              -- JSON: what it left for the next passes
+    created REAL NOT NULL,
+    PRIMARY KEY (draft, name)
 );
 CREATE TABLE IF NOT EXISTS draft_version (
     id INTEGER PRIMARY KEY,
@@ -212,15 +221,26 @@ class Store:
 
         with self.db:
             self.db.execute("BEGIN")
-            self.db.execute(
-                "INSERT INTO outbox (topic, text, url, silent, created, buttons, ref)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (topic, text, url, int(silent), time.time(), json.dumps(buttons or []), ref),
-            )
+            self._outbox(topic, text, url, silent, buttons, ref)
             if seen_key is not None:
                 self.mark_seen(seen_key)
             if done_job is not None:
                 self.finish_job(done_job)
+
+    def _outbox(
+        self,
+        topic: str,
+        text: str,
+        url: str | None = None,
+        silent: bool = False,
+        buttons: list[tuple[str, str]] | None = None,
+        ref: str | None = None,
+    ) -> None:
+        self.db.execute(
+            "INSERT INTO outbox (topic, text, url, silent, created, buttons, ref)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (topic, text, url, int(silent), time.time(), json.dumps(buttons or []), ref),
+        )
 
     def pending(self, limit: int = 10) -> list[Outgoing]:
         rows = self.db.execute(
@@ -458,6 +478,27 @@ class Store:
             )
             version = self.add_version(draft_id, text, "model")
         return version
+
+    def stages(self, draft_id: int) -> dict[str, dict]:
+        """The draft's finished passes by name, with what each left."""
+
+        rows = self.db.execute(
+            "SELECT name, data FROM draft_stage WHERE draft = ?", (draft_id,)
+        ).fetchall()
+        return {name: json.loads(data) for name, data in rows}
+
+    def put_stage(self, draft_id: int, name: str, data: dict, message: dict | None = None) -> None:
+        """Record a finished pass; with ``message`` (``enqueue``'s arguments), queue it in
+        the same transaction: sent once, whatever restarts come."""
+
+        with self.db:
+            self.db.execute("BEGIN")
+            self.db.execute(
+                "INSERT OR REPLACE INTO draft_stage VALUES (?, ?, ?, ?)",
+                (draft_id, name, json.dumps(data, ensure_ascii=False), time.time()),
+            )
+            if message is not None:
+                self._outbox(**message)
 
     def fail_draft(self, draft_id: int) -> None:
         self._set_draft(draft_id, status="failed")

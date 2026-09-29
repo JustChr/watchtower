@@ -368,6 +368,7 @@ def test_replay_writes_a_report_after_every_issue(agent_cfg, hist, tmp_path, mod
     assert "| #8 | 🔧 user setup | high | 0/0 | 0 | completed |" in text
     assert "> Please re-authorize.\n> Then restart." in text
     assert "**Your first answer** (closed as completed):\n\n> Answer to 8" in text
+    assert "- Minutes per pass: files 0.0 · investigation 0.0 · assessment 0.0 · reply 0.0" in text
     assert said[0].startswith("1 issue(s) to replay") and said[-1].startswith("#8: user_setup")
 
 

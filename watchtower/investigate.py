@@ -189,6 +189,25 @@ class Workspace:
         code = f"The code is the project at {self.code_label}." if self.code else NO_CODE
         return INVESTIGATE_SYSTEM.format(code=code, steps=steps)
 
+    def restore(self, names: list[str]) -> None:
+        """Read again what an earlier run read (``read``'s names, for a draft resumed
+        after a restart): the assessment's quotes are checked against them. The names
+        were model-chosen once, so they get the tools' confinement again."""
+
+        for name in names:
+            if name in self.read:
+                continue
+            if name.startswith("#") and name[1:].isdigit():
+                thread = self._thread(int(name[1:]))
+                if thread is not None:
+                    self.read[name] = _whole(thread)
+            elif self.code is not None:
+                path = self._inside(name)
+                if path is not None and path.is_file() and not path.is_symlink():
+                    content = _text_file(path)
+                    if content is not None:
+                        self.read[self._rel(path)] = content
+
     def run(self, name: object, args: object) -> str:
         """One tool call's result. Never raises: a bad call gets an explanation."""
 
@@ -365,9 +384,7 @@ class Workspace:
         if thread is None:
             return f"No earlier thread #{number}."
         self.steps.append(f"read #{number}")
-        self.read[f"#{number}"] = "\n\n".join(
-            [thread["title"], thread["body"], *(c["body"] for c in thread["comments"])]
-        )
+        self.read[f"#{number}"] = _whole(thread)
         lines = [
             f"#{number} [{thread['kind']}, {thread['state']}] {thread['title']}",
             _clip(thread["body"], MAX_THREAD_BODY),
@@ -398,6 +415,12 @@ def _int(value: object, default: int) -> int:
 def _clip(text: str, limit: int) -> str:
     text = text.strip()
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def _whole(thread: dict) -> str:
+    """Every word of a thread: what quotes from it are checked against."""
+
+    return "\n\n".join([thread["title"], thread["body"], *(c["body"] for c in thread["comments"])])
 
 
 def _cap(text: str) -> str:

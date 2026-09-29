@@ -930,7 +930,7 @@ def test_summaries_run_between_the_passes_of_a_draft(agent_cfg, store, hist, tmp
     monkeypatch.setattr(llm, "summarize", needs(False))
     seen = []
 
-    def fake_generate(cfg, draft, history, root, folder, *, beat):
+    def fake_generate(cfg, draft, history, root, folder, *, beat, stages):
         watcher.handle(event(kind="issue_comment", key="k-comment"), cfg, store)
         beat("assessing")
         seen.append([m.text for m in store.pending()])
@@ -940,6 +940,29 @@ def test_summaries_run_between_the_passes_of_a_draft(agent_cfg, store, hist, tmp
     add_draft(store)
     assert worker.Worker(agent_cfg, store, hist, tmp_path).step()
     assert any("Comment on issue" in text for text in seen[0])
+
+
+def test_the_assessment_is_sent_when_it_is_ready_and_only_once(
+    agent_cfg, store, hist, tmp_path, model
+):
+    put_issue(hist)
+    add_draft(store)
+    draft = store.claim_draft()
+    model.fail = "reply"  # cut off after the assessment
+    assert (
+        drafts.generate(agent_cfg, draft, hist, tmp_path, stages=worker.StoredStages(store, draft))
+        is None
+    )
+    (assessment,) = store.pending()
+    assert "🧭 Assessment #7" in assessment.text and assessment.silent
+
+    # A restart: the draft is queued again and resumes with the reply.
+    store.requeue_drafting()
+    model.fail = None
+    worker.Worker(agent_cfg, store, hist, tmp_path).step()
+    assert [k for k, _ in model.calls].count("assess") == 1
+    first, offered = store.pending()
+    assert first.id == assessment.id and "✍️ Draft reply #7" in offered.text
 
 
 def test_drafter_offers_the_draft_with_buttons_and_takes_replies(
@@ -959,9 +982,10 @@ def test_drafter_offers_the_draft_with_buttons_and_takes_replies(
     result = drafts.Result("Which <version>?", "asks", "diag.json", judged)
     steps = []
 
-    def fake_generate(cfg, draft, history, root, folder, *, beat):
+    def fake_generate(cfg, draft, history, root, folder, *, beat, stages):
         beat("assessing")
         steps.append(store.heartbeats()["worker"][1])
+        stages.put(drafts.ASSESSMENT, {"verdict": judged.to_json(), "seconds": 60.0})
         return result
 
     monkeypatch.setattr(drafts, "generate", fake_generate)

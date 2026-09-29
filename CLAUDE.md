@@ -21,7 +21,9 @@ end-to-end locally.
   - `worker.py` — **all** model work, one job at a time (summaries first, run
     between a long job's passes too; then drafts; then briefs, replays);
     **no secrets, no internet** (only `watchtower-llm`); decides which events
-    get a draft. Draft logic in `drafts.py`; attached text
+    get a draft. Draft logic in `drafts.py`: passes (files, investigation,
+    assessment, reply), each finished one kept as a `draft_stage`, so a
+    restart resumes; the assessment goes to Telegram when it's done; attached text
     files come from `attachments.py` (the watcher downloads them, tokenless).
     Before the assessment, `investigate.py` lets the model look things up with
     read-only tools (code at the author's version, which the watcher fetches

@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 
 from . import brief, drafts, evaluate, llm, render, snapshot
+from .analysis import Verdict
 from .config import DATA_DIR, Config
 from .events import Event
 from .history import MAINTAINERS, History
@@ -127,7 +128,13 @@ class Worker:
         why = ""
         try:
             result = drafts.generate(
-                self.cfg, draft, self.history, self.root, self.files, beat=self.between
+                self.cfg,
+                draft,
+                self.history,
+                self.root,
+                self.files,
+                beat=self.between,
+                stages=StoredStages(store, draft),
             )
         except drafts.Unfit as err:
             result, why = None, f": {err}"
@@ -144,12 +151,7 @@ class Worker:
         version = store.finish_draft(
             draft.id, result.reply, result.note, result.attachments, result.verdict.to_json()
         )
-        ready = store.draft(draft.id)
-        # The assessment first, silently: the draft right after it is what needs you.
-        store.enqueue(
-            draft.topic, render.verdict(ready, result.verdict), url=draft.url, silent=True
-        )
-        drafts.offer(store, ready, version)
+        drafts.offer(store, store.draft(draft.id), version)
         _LOGGER.info("draft %d ready for %s", draft.id, label)
 
     # -- briefs -----------------------------------------------------------------
@@ -206,6 +208,30 @@ class Worker:
         )
         text = f"Replay of {p['repo']} done: {len(outcomes)} issue(s), report in {out}."
         self.store.enqueue("system", render.system(text), done_job=job.id)
+
+
+class StoredStages(drafts.Stages):
+    """A draft's finished passes, kept in the store: a restart resumes after the last.
+    The assessment goes to Telegram as soon as it's there, silently (the draft after
+    it is what needs you), in the same transaction: sent once, never lost."""
+
+    def __init__(self, store: Store, draft: Draft) -> None:
+        super().__init__(store.stages(draft.id))
+        self.store = store
+        self.draft = draft
+
+    def put(self, name: str, data: dict) -> None:
+        message = None
+        if name == drafts.ASSESSMENT:
+            verdict = Verdict.from_json(data["verdict"])
+            message = {
+                "topic": self.draft.topic,
+                "text": render.verdict(self.draft, verdict),
+                "url": self.draft.url,
+                "silent": True,
+            }
+        self.store.put_stage(self.draft.id, name, data, message)
+        super().put(name, data)
 
 
 def wants_draft(event: Event, summary: llm.Summary | None, cfg: Config) -> bool:

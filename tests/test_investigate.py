@@ -362,6 +362,51 @@ def test_a_draft_investigates_the_authors_version(agent_cfg, store, hist, tmp_pa
     assert again == result.verdict
 
 
+def test_a_draft_cut_off_after_investigating_resumes_there(agent_cfg, store, hist, tmp_path, model):
+    put_issue(hist, body=FORM)
+    hist.put_releases(REPO, RELEASES)
+    copy_at(tmp_path, "v0.9.14-beta.3", {"custom_components/car/coordinator.py": COORDINATOR})
+    model.turns = [
+        {"tool_calls": [call("read_code", path="custom_components/car/coordinator.py")]},
+        {"content": "Only the first car is refreshed."},
+    ]
+    model.verdicts = [
+        verdict(
+            category="our_bug",
+            evidence=[
+                {
+                    "source": "custom_components/car/coordinator.py",
+                    "quote": "for car in self.cars[:1]:",
+                    "point": "only the first car",
+                }
+            ],
+        )
+    ]
+    add_draft(store)
+    draft = store.claim_draft()
+    stages = drafts.Stages()
+    model.fail = "assess"  # e.g. the box restarted while the model was judging
+    assert drafts.generate(agent_cfg, draft, hist, tmp_path, stages=stages) is None
+    assert sorted(stages.done) == [drafts.FILES, drafts.INVESTIGATION]
+
+    model.fail = None
+    model.acts.clear()
+    result = drafts.generate(agent_cfg, draft, hist, tmp_path, stages=drafts.Stages(stages.done))
+    assert model.acts == []  # not investigated again
+    # What it read was read again from the copy: its quote still checks out.
+    assert result.verdict.evidence[0].verified
+    assert result.verdict.looked_at == ("read custom_components/car/coordinator.py:1-4",)
+    assert set(result.seconds) == {"files", "investigation", "assessment", "reply"}
+
+
+def test_restore_keeps_to_the_code_copy(hist, code):
+    ws = workspace(hist, code)
+    ws.restore(
+        ["../secret.txt", "node_modules/dep.js", "#99", "custom_components/car/coordinator.py"]
+    )
+    assert list(ws.read) == ["custom_components/car/coordinator.py"]
+
+
 def test_without_the_authors_version_live_drafts_use_the_default_branch(
     agent_cfg, store, hist, tmp_path, model
 ):
