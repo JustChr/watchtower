@@ -1,6 +1,6 @@
 """Draft replies to issues and discussions, for the user to post, edit or reject in Telegram.
 
-The drafter process writes them (``drafter``); the poster posts one only after
+The worker process writes them (``worker``); the poster posts one only after
 the user approved that exact text (``poster``).
 
 A draft is several passes with the agent model (time is cheap, context isn't):
@@ -501,7 +501,7 @@ def fetch_code(
     as_of: str | None = None,
 ) -> Path | None:
     """Fetch the code of the release the draft will judge ``thread`` against (see
-    ``versions.code_release``): the drafter has no internet. Needs the thread's
+    ``versions.code_release``): the worker has no internet. Needs the thread's
     attachments in ``folder`` already (the diagnostics tell the version)."""
 
     files = gather(thread, repo, folder)

@@ -1,4 +1,4 @@
-"""Entry point: ``python -m watchtower watcher|gateway|drafter|poster``, or
+"""Entry point: ``python -m watchtower watcher|gateway|worker|poster``, or
 ``health <name> <max-age-seconds>``, or ``history ...``, or ``eval ...``."""
 
 from __future__ import annotations
@@ -68,12 +68,14 @@ _CASE = re.compile(r"(\d+)(?:@(\d+))?")
 
 
 def evaluate(argv: list[str]) -> int:
-    """Replay closed issues (``evaluate``); needs the model and the internet, so it
-    runs in the watcher container. ``160@5`` replays #160 cut at its 5th comment."""
+    """Replay closed issues (``evaluate``): run in the watcher container, it fetches
+    what the cases need and queues the replay for the worker (the model).
+    ``160@5`` replays #160 cut at its 5th comment."""
 
     from . import evaluate as replay
     from .github import GitHub
     from .history import History
+    from .store import Store
 
     limit = None
     if "--limit" in argv:
@@ -92,17 +94,22 @@ def evaluate(argv: list[str]) -> int:
         return 2
     repo = argv[0]
     stamp = time.strftime("%Y%m%d-%H%M", time.gmtime())
-    replay.run(
-        cfg,
-        History(config.DATA_DIR / "history.db"),
+    out = config.DATA_DIR / "eval" / f"{repo.split('/')[1]}-{stamp}.md"
+    numbers = [_case(a) for a in argv[1:]]
+    history = History(config.DATA_DIR / "history.db")
+    selected = replay.cases(history, repo, numbers)[:limit]
+    print(f"{len(selected)} issue(s): fetching their files and code")
+    replay.prepare(
+        history,
         repo,
+        selected,
         config.DATA_DIR / "repos",
         config.DATA_DIR / "attachments",
-        config.DATA_DIR / "eval" / f"{repo.split('/')[1]}-{stamp}.md",
-        [_case(a) for a in argv[1:]],
-        limit,
-        source=GitHub(config.read_secret("github_read")),
+        GitHub(config.read_secret("github_read")),
     )
+    payload = {"repo": repo, "numbers": numbers, "limit": limit, "out": str(out)}
+    Store(config.DATA_DIR / "watchtower.db").add_job("eval", f"eval:{repo}:{stamp}", payload)
+    print(f"Queued for the worker; Telegram says when it's done. Report: {out}")
     return 0
 
 
@@ -125,10 +132,10 @@ def main(argv: list[str]) -> int:
             from . import gateway
 
             gateway.run(config.load())
-        case ["drafter"]:
-            from . import drafter
+        case ["worker"]:
+            from . import worker
 
-            drafter.run(config.load())
+            worker.run(config.load())
         case ["poster"]:
             from . import poster
 

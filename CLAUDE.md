@@ -15,10 +15,13 @@ end-to-end locally.
 - `watchtower/` — the package. Standard library only, except `cryptography`
   (RS256 for the GitHub App JWT); keep it that way unless a dependency clearly
   earns its place.
-  - `watcher.py` — poll loop; holds the GitHub **read-only** token; refreshes a
-    thread and queues a draft when a stranger's item needs a reply.
-  - `drafter.py` — writes drafts with `agent_model`; **no secrets, no
-    internet** (only `watchtower-llm`). Logic in `drafts.py`; attached text
+  - `watcher.py` — poll loop; holds the GitHub **read-only** token; never
+    calls the model: queues `job`s (summary, brief, eval) for the worker, and
+    fetches what they need (a draft's thread, attachments, code at a release).
+  - `worker.py` — **all** model work, one job at a time (summaries first, run
+    between a long job's passes too; then drafts; then briefs, replays);
+    **no secrets, no internet** (only `watchtower-llm`); decides which events
+    get a draft. Draft logic in `drafts.py`; attached text
     files come from `attachments.py` (the watcher downloads them, tokenless).
     Before the assessment, `investigate.py` lets the model look things up with
     read-only tools (code at the author's version, which the watcher fetches
@@ -42,6 +45,8 @@ end-to-end locally.
     brief from the docs at the tag + release notes (no releases: from main,
     at most weekly); used as
     prompt context only after the user approves it via a Telegram button.
+  - `evaluate.py` — replays closed issues (`eval` CLI in the watcher: it
+    prepares, the worker replays).
   - Buttons: the gateway records presses — and replies to messages whose
     outbox `ref` is `draft:<id>` (edits, reject reasons) — as `decision` rows;
     the watcher (briefs) or the poster (drafts) applies them. `callback_data`

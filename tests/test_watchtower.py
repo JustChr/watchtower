@@ -153,15 +153,45 @@ def test_discussions_comments_and_replies(cfg, store):
     ]
 
 
-def test_poll_once_reports_each_event_exactly_once(cfg, store, monkeypatch):
-    monkeypatch.setattr(llm, "summarize", lambda cfg, item, context="": None)
+def test_poll_once_hands_each_event_to_the_worker_exactly_once(cfg, store):
     gh = FakeGitHub()
     store.set_cursor("baseline:owner/repo", iso(NOW))
     gh.issues = [issue(1, AFTER)]
     for _ in range(3):
         watcher.poll_once(gh, store, cfg, {}, {})
-    assert [m.text.splitlines()[1] for m in store.pending()] == ["Title 1"]
+    assert [(j.kind, j.payload["title"]) for j in store.jobs("queued")] == [("summary", "Title 1")]
     assert store.get_cursor("issues:owner/repo") == AFTER
+
+
+def test_the_worker_reports_what_the_watcher_queued(cfg, store, tmp_path, monkeypatch):
+    from watchtower.history import History
+    from watchtower.worker import Worker
+
+    monkeypatch.setattr(llm, "summarize", lambda cfg, item, context="": None)
+    gh = FakeGitHub()
+    store.set_cursor("baseline:owner/repo", iso(NOW))
+    gh.issues = [issue(1, AFTER)]
+    watcher.poll_once(gh, store, cfg, {}, {})
+    assert Worker(cfg, store, History(tmp_path / "h.db"), tmp_path).step()
+    assert [m.text.splitlines()[1] for m in store.pending()] == ["Title 1"]
+    assert store.jobs("queued") == [] and len(store.jobs("done")) == 1
+
+
+def test_the_watcher_never_talks_to_the_model():
+    # All model work is the worker's: the watcher holds a token and has internet.
+    assert not hasattr(watcher, "llm")
+
+
+def test_an_open_job_is_queued_once_and_a_restart_requeues_it(store):
+    assert store.add_job("summary", "k", {"a": 1})
+    assert not store.add_job("summary", "k", {"a": 1})
+    job = store.claim_job(("summary",))
+    assert job.payload == {"a": 1} and store.claim_job(("summary",)) is None
+    store.requeue_jobs()
+    assert store.claim_job(("brief",)) is None
+    assert store.claim_job(("summary",)).id == job.id
+    store.finish_job(job.id)
+    assert store.add_job("summary", "k", {"a": 1})  # done: the key may come back
 
 
 def test_a_failing_repo_is_reported_once_and_does_not_crash(cfg, store):
@@ -175,15 +205,12 @@ def test_a_failing_repo_is_reported_once_and_does_not_crash(cfg, store):
     assert [m.topic for m in store.pending()] == ["system"]
 
 
-def test_bot_activity_is_silent_and_not_summarised(cfg, store, monkeypatch):
-    def fail(cfg, item, context=""):
-        raise AssertionError("bots must not reach the model")
-
-    monkeypatch.setattr(llm, "summarize", fail)
+def test_bot_activity_is_silent_and_not_summarised(cfg, store):
     event = Event("k", "reviews", "pr", "owner/repo", 3, "Bump x", "dependabot[bot]", "", "u")
     watcher.handle(event, cfg, store)
     (message,) = store.pending()
     assert message.silent and store.is_seen("k")
+    assert store.jobs("queued") == []  # never reaches the model
 
 
 # -- the model's answer is untrusted ----------------------------------------

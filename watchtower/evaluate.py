@@ -17,10 +17,13 @@ got posted, kept as the example to beat).
 The code it may investigate is the author's version, or else the newest release
 at the cutoff -- never today's default branch, which would already hold the fix.
 
-It needs the model and the internet (attachments are downloaded without a token,
-the code with the read token), so it runs in the watcher container, from a shell:
-``python -m watchtower eval <owner/name> [--limit N] [number[@comment] ...]``. The report,
-``/data/eval/<name>-<time>.md``, is rewritten after every issue.
+It needs the internet (attachments are downloaded without a token, the code with
+the read token) and the model, which no container has both of. So from a shell in
+the watcher container, ``python -m watchtower eval <owner/name> [--limit N]
+[number[@comment] ...]`` fetches the files and the code (``prepare``) and queues
+the replay for the worker; Telegram says when it's done. The report,
+``/data/eval/<name>-<time>.md``, is rewritten after every issue. From the dev
+machine, ``run`` with a ``source`` does both.
 """
 
 from __future__ import annotations
@@ -193,6 +196,28 @@ def report(repo: str, cfg: Config, outcomes: Sequence[Outcome], started: str) ->
     return "\n".join(lines) + "\n"
 
 
+def prepare(
+    history: History,
+    repo: str,
+    selected: Sequence[Case],
+    root: Path,
+    folder: Path,
+    source: snapshot.Source,
+    say: Callable[[str], None] = print,
+) -> None:
+    """Download each case's attachments and fetch the code at its version."""
+
+    for case in selected:
+        try:
+            attachments.download(case.thread, repo, folder)
+        except Exception as err:  # noqa: BLE001 -- replay without the files
+            say(f"#{case.number}: attachments failed ({type(err).__name__})")
+        try:
+            drafts.fetch_code(source, history, repo, case.thread, folder, root, case.cutoff)
+        except Exception as err:  # noqa: BLE001 -- replay without the code
+            say(f"#{case.number}: code failed ({type(err).__name__})")
+
+
 def run(
     cfg: Config,
     history: History,
@@ -205,23 +230,17 @@ def run(
     say: Callable[[str], None] = print,
     source: snapshot.Source | None = None,
 ) -> list[Outcome]:
-    """Replay; with a ``source`` (GitHub), each case gets the code at its version."""
+    """Replay; with a ``source`` (GitHub) it first fetches each case's files and
+    code (``prepare``), without one it uses what was fetched before."""
 
     selected = cases(history, repo, numbers)[:limit]
     started = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime())
     say(f"{len(selected)} issue(s) to replay; report: {out}")
     out.parent.mkdir(parents=True, exist_ok=True)
+    if source is not None:
+        prepare(history, repo, selected, root, folder, source, say)
     outcomes: list[Outcome] = []
     for case in selected:
-        try:
-            attachments.download(case.thread, repo, folder)
-        except Exception as err:  # noqa: BLE001 -- replay without the files
-            say(f"#{case.number}: attachments failed ({type(err).__name__})")
-        if source is not None:
-            try:
-                drafts.fetch_code(source, history, repo, case.thread, folder, root, case.cutoff)
-            except Exception as err:  # noqa: BLE001 -- replay without the code
-                say(f"#{case.number}: code failed ({type(err).__name__})")
         draft = Draft(
             id=0,
             event_key=f"eval:{repo}#{case.number}",

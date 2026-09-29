@@ -14,6 +14,7 @@ from watchtower import brief, config, gateway, llm, render, snapshot, watcher
 from watchtower.github import GitHub, GitHubError
 from watchtower.history import History
 from watchtower.store import Store
+from watchtower.worker import Worker
 
 REPO = "owner/repo"
 SHA1 = "a" * 40
@@ -302,10 +303,11 @@ def test_a_release_brief_is_written_from_the_release_tag(
     source = FakeSource(SHA1, {"README.md": "release docs"})
     source.releases = [release("v1.0.0", "2026-01-01T00:00:00Z")]
     watcher.sync_code(source, hist, store, agent_cfg, {}, tmp_path)
-
-    assert seen == [("release docs", "v1.0.0", 1)]
+    assert seen == [] and store.pending() == []  # the watcher only fetches the code
     assert source.downloads[-1] == f"/repos/{REPO}/tarball/v1.0.0"
-    assert not (tmp_path / ".release" / "owner" / "repo").exists()  # temporary copy removed
+
+    assert Worker(agent_cfg, store, hist, tmp_path).step()
+    assert seen == [("release docs", "v1.0.0", 1)]
     (message,) = store.pending()
     assert "v1.0.0 (stable)" in message.text
 
@@ -316,7 +318,11 @@ def test_new_brief_goes_up_for_approval_and_is_used_once_approved(
     monkeypatch.setattr(brief, "generate", lambda cfg, repo, target: "Purpose\nCar data.")
     source = FakeSource(SHA1, {"README.md": "readme"})
     watcher.sync_code(source, hist, store, agent_cfg, {}, tmp_path)
+    watcher.sync_code(source, hist, store, agent_cfg, {}, tmp_path)  # still queued: not again
+    assert len(store.jobs("queued")) == 1
+    Worker(agent_cfg, store, hist, tmp_path).step()
     watcher.sync_code(source, hist, store, agent_cfg, {}, tmp_path)  # same commit: no second brief
+    assert store.jobs("queued") == []
 
     (message,) = store.pending()
     assert message.topic == "system" and "Car data." in message.text
@@ -334,14 +340,27 @@ def test_new_brief_goes_up_for_approval_and_is_used_once_approved(
 def test_no_agent_model_means_no_brief(cfg, store, hist, tmp_path, monkeypatch):
     monkeypatch.setattr(brief, "generate", lambda *a: pytest.fail("no agent model configured"))
     watcher.sync_code(FakeSource(SHA1, {"README.md": ""}), hist, store, cfg, {}, tmp_path)
-    assert store.pending() == []
+    assert store.pending() == [] and store.jobs("queued") == []
 
 
 def test_failed_brief_is_reported_without_buttons(agent_cfg, store, hist, tmp_path, monkeypatch):
     monkeypatch.setattr(brief, "generate", lambda cfg, repo, target: None)
     watcher.sync_code(FakeSource(SHA1, {"README.md": ""}), hist, store, agent_cfg, {}, tmp_path)
+    Worker(agent_cfg, store, hist, tmp_path).step()
     (message,) = store.pending()
     assert "failed" in message.text and message.buttons == ()
+    assert hist.latest_brief(REPO).status == "failed"  # retried in a day, not next hour
+
+
+def test_a_brief_without_its_code_copy_fails_instead_of_guessing(
+    agent_cfg, store, hist, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(brief, "generate", lambda *a: pytest.fail("no code to write it from"))
+    payload = {"repo": REPO, "ref": "v9", "label": "v9 (stable)", "tag": "v9"}
+    store.add_job("brief", "brief:x", payload)
+    Worker(agent_cfg, store, hist, tmp_path).step()
+    (message,) = store.pending()
+    assert "failed" in message.text
 
 
 def test_summaries_get_the_project_context(cfg, monkeypatch):

@@ -1,114 +1,45 @@
-"""The watcher process: poll GitHub, summarise, queue; keep each repo's history, code
-snapshot and brief current. Holds the read-only GitHub token."""
+"""The watcher process: poll GitHub and hand what's new to the worker; keep each
+repo's history and code snapshot current; fetch what a draft or a brief needs.
+Holds the read-only GitHub token and never talks to the model: all model work is
+the worker's, which has no secrets and no internet."""
 
 from __future__ import annotations
 
+import dataclasses
 import logging
-import shutil
 import time
 from pathlib import Path
 
-from . import attachments, brief, drafts, llm, render, snapshot
+from . import attachments, brief, drafts, render, snapshot
 from .config import DATA_DIR, Config, read_secret
 from .events import Event, Source, poll_repo
 from .github import GitHub, GitHubError, RateLimited
-from .history import MAINTAINERS, History, sync_repo, sync_thread
-from .store import Store
+from .history import History, sync_repo, sync_thread
+from .store import Draft, Store
 
 _LOGGER = logging.getLogger(__name__)
 
 # Report a repeating error to Telegram at most this often (seconds).
 ERROR_REPORT_INTERVAL = 3600
+# Polls a draft's thread refresh may fail before the draft is given up.
+PREP_TRIES = 3
 
 
-# New threads: every one from a stranger gets a draft, whatever the summary says.
-OPENING_KINDS = frozenset({"issue", "discussion"})
+def handle(event: Event, cfg: Config, store: Store) -> None:
+    """Bot activity (Dependabot, Actions) is reported at once, silently, without a
+    summary; everything else goes to the worker, which summarises and reports it."""
 
-
-def wants_draft(event: Event, summary: llm.Summary | None, cfg: Config) -> bool:
-    """A stranger's new issue or discussion, or a stranger's comment on one that the
-    summary says needs a reply. A new thread doesn't depend on the small model's
-    one-line judgement (a report answering an earlier question reads as needing no
-    reply): the assessment judges it, and the user can reject the draft."""
-
-    opening = event.kind in OPENING_KINDS
-    return (
-        cfg.drafts
-        and (opening or (summary is not None and summary.needs_reply))
-        and event.thread_kind is not None
-        and not event.is_bot
-        and event.association not in MAINTAINERS
-    )
-
-
-def queue_draft(
-    event: Event,
-    source: Source,
-    history: History,
-    store: Store,
-    files: Path | None = None,
-    root: Path | None = None,
-) -> bool:
-    """Refresh the thread in the history, download its attachments into ``files`` and
-    the code at the author's version under ``root`` (the drafter can't reach GitHub),
-    then queue a draft. Without a fresh thread there's no draft: it would answer an
-    old state. Without the files or the code there is one."""
-
-    try:
-        sync_thread(source, history, event.repo, event.number, event.thread_kind)
-    except Exception as err:  # noqa: BLE001 -- the event is still reported
-        _LOGGER.warning("%s: no draft, thread refresh failed: %s", event.key, err)
-        return False
-    if files is not None:
-        try:
-            attachments.download(history.thread(event.repo, event.number), event.repo, files)
-        except Exception:  # noqa: BLE001 -- the draft says what it couldn't read
-            _LOGGER.exception("%s: attachments", event.key)
-    if root is not None:
-        try:
-            thread = history.thread(event.repo, event.number)
-            drafts.fetch_code(source, history, event.repo, thread, files, root)
-        except Exception as err:  # noqa: BLE001 -- the draft uses the default branch
-            _LOGGER.warning("%s: code at the author's version: %s", event.key, err)
-    store.add_draft(
-        event.key,
-        repo=event.repo,
-        number=event.number,
-        kind=event.thread_kind,
-        topic=event.topic,
-        title=event.title,
-        url=event.url,
-        reply_to=event.reply_to,
-    )
-    return True
-
-
-def handle(
-    event: Event,
-    cfg: Config,
-    store: Store,
-    context: str = "",
-    source: Source | None = None,
-    history: History | None = None,
-    files: Path | None = None,
-    root: Path | None = None,
-) -> None:
-    # Bot activity (Dependabot, Actions) is reported silently and not summarised.
-    summary = None if event.is_bot else llm.summarize(cfg, event.for_model(), context)
-    drafting = (
-        source is not None
-        and history is not None
-        and wants_draft(event, summary, cfg)
-        and queue_draft(event, source, history, store, files, root)
-    )
-    store.enqueue(
-        event.topic,
-        render.message(event, summary, drafting),
-        url=event.url,
-        silent=event.is_bot,
-        seen_key=event.key,
-    )
-    _LOGGER.info("queued %s%s", event.key, " (drafting)" if drafting else "")
+    if event.is_bot:
+        store.enqueue(
+            event.topic,
+            render.message(event, None),
+            url=event.url,
+            silent=True,
+            seen_key=event.key,
+        )
+    else:
+        store.add_job("summary", event.key, dataclasses.asdict(event), seen_key=event.key)
+    _LOGGER.info("queued %s", event.key)
 
 
 def poll_once(
@@ -117,17 +48,8 @@ def poll_once(
     cfg: Config,
     titles: dict[tuple[str, int], tuple[str, bool]],
     errors: dict[str, float],
-    contexts: dict[str, str] | None = None,
-    history: History | None = None,
-    files: Path | None = None,
-    root: Path | None = None,
 ) -> float | None:
-    """Poll every repo once. Returns the time to sleep until if rate limited.
-
-    ``contexts`` maps a repo to background for its summaries (``brief.project_context``).
-    Without ``history`` no drafts are queued; ``files`` is where their attachments go,
-    ``root`` where the code snapshots are.
-    """
+    """Poll every repo once. Returns the time to sleep until if rate limited."""
 
     for repo in cfg.repos:
         try:
@@ -147,11 +69,65 @@ def poll_once(
         errors.pop(repo, None)
         for event in poll.events:
             if not store.is_seen(event.key):
-                context = (contexts or {}).get(repo, "")
-                handle(event, cfg, store, context, source, history, files, root)
+                handle(event, cfg, store)
         for name, value in poll.cursors.items():
             store.set_cursor(name, value)
     return None
+
+
+def prepare(
+    draft: Draft, source: Source, history: History, files: Path | None, root: Path | None
+) -> bool:
+    """Refresh the draft's thread in the history, download its attachments into
+    ``files`` and the code at the author's version under ``root``: the worker can't
+    reach GitHub. Without a fresh thread it isn't ready (it would answer an old
+    state); without the files or the code it is."""
+
+    label = (draft.repo, draft.number)
+    try:
+        sync_thread(source, history, draft.repo, draft.number, draft.kind)
+    except Exception as err:  # noqa: BLE001 -- tried again next poll
+        _LOGGER.warning("%s#%d: thread refresh failed: %s", *label, err)
+        return False
+    thread = history.thread(draft.repo, draft.number)
+    if files is not None:
+        try:
+            attachments.download(thread, draft.repo, files)
+        except Exception:  # noqa: BLE001 -- the draft says what it couldn't read
+            _LOGGER.exception("%s#%d: attachments", *label)
+    if root is not None:
+        try:
+            drafts.fetch_code(source, history, draft.repo, thread, files, root)
+        except Exception as err:  # noqa: BLE001 -- the draft uses the default branch
+            _LOGGER.warning("%s#%d: code at the author's version: %s", *label, err)
+    return True
+
+
+def prepare_drafts(
+    source: Source,
+    history: History,
+    store: Store,
+    failures: dict[int, int],
+    files: Path | None = None,
+    root: Path | None = None,
+) -> None:
+    """Hand the worker the drafts it asked for, once their thread is fetched. One
+    whose thread can't be refreshed ``PREP_TRIES`` polls in a row fails, visibly."""
+
+    for draft in store.drafts("prep"):
+        if prepare(draft, source, history, files, root):
+            failures.pop(draft.id, None)
+            store.prepared(draft.id)
+            continue
+        failures[draft.id] = failures.get(draft.id, 0) + 1
+        if failures[draft.id] >= PREP_TRIES:
+            failures.pop(draft.id)
+            store.fail_draft(draft.id)
+            text = (
+                f"The draft reply to {draft.repo}#{draft.number} failed:"
+                " the thread could not be fetched from GitHub."
+            )
+            store.enqueue(draft.topic, render.system(text), url=draft.url)
 
 
 def _failed(label: str, err: Exception, store: Store, errors: dict[str, float]) -> None:
@@ -201,7 +177,8 @@ def sync_code(
     errors: dict[str, float],
     root: Path,
 ) -> None:
-    """Refresh each repo's code snapshot and, on a new release, put a new brief up for approval."""
+    """Refresh each repo's code snapshot and, on a new release, fetch the code at its
+    tag and queue a brief for the worker to write."""
 
     for repo in cfg.repos:
         try:
@@ -211,37 +188,20 @@ def sync_code(
             continue
         if not cfg.agent_model:
             continue
-        release_copy = snapshot.path_for(root / ".release", repo)
         try:
             releases = snapshot.releases(source, repo)
-            history.put_releases(repo, releases)  # the drafter compares versions with them
+            history.put_releases(repo, releases)  # the worker compares versions with them
             target = brief.plan(releases, commit, cfg.brief_betas)
             if not brief.due(history, repo, target, time.time()):
                 continue
-            store.beat("watcher", f"writing the brief for {repo}")  # can take minutes
-            if target.release is None:
-                text = brief.generate(cfg, repo, snapshot.path_for(root, repo))
-            else:
-                snapshot.fetch(source, repo, target.ref, release_copy)
-                text = brief.generate(cfg, repo, release_copy, target.release, releases)
+            tag = target.release.tag if target.release else None
+            if tag is not None and snapshot.fetch_version(source, repo, tag, root) is None:
+                raise snapshot.SnapshotError(f"release tag {tag!r} can't be a folder name")
         except Exception as err:  # noqa: BLE001
             _failed(f"Brief {repo}", err, store, errors)
             continue
-        finally:
-            shutil.rmtree(release_copy, ignore_errors=True)
-        brief_id = history.add_brief(repo, target.ref, target.label, text)
-        if text is None:
-            text = f"Brief for {repo} {target.label} failed; retrying in a day."
-            store.enqueue("system", render.system(text))
-            continue
-        store.enqueue(
-            "system",
-            render.brief(repo, target.label, text),
-            buttons=[
-                ("✅ Use it", f"brief:approve:{brief_id}"),
-                ("🗑 Discard", f"brief:reject:{brief_id}"),
-            ],
-        )
+        payload = {"repo": repo, "ref": target.ref, "label": target.label, "tag": tag}
+        store.add_job("brief", f"brief:{repo}:{target.ref}", payload)
 
 
 def apply_decisions(store: Store, history: History) -> None:
@@ -250,39 +210,24 @@ def apply_decisions(store: Store, history: History) -> None:
         store.mark_applied(decision_id)
 
 
-def _check_model(cfg: Config) -> str:
-    if not cfg.summary_model:
-        return "summaries off (no llm.summary_model)"
-    try:
-        models = llm.available_models(cfg)
-    except Exception as err:  # noqa: BLE001
-        return (
-            f"Ollama unreachable at {cfg.llm_url} ({type(err).__name__}); sending without summaries"
-        )
-    if not llm.has_model(models, cfg.summary_model):
-        return f"model {cfg.summary_model} not in `ollama list`; sending without summaries"
-    return f"summaries by {cfg.summary_model}"
-
-
 def run(cfg: Config) -> None:
     store = Store(DATA_DIR / "watchtower.db")
     github = GitHub(read_secret("github_read"))
-    status = _check_model(cfg)
-    _LOGGER.info("watcher started: %s", status)
-    store.enqueue("system", render.system(f"Watcher online: {', '.join(cfg.repos)}; {status}."))
+    _LOGGER.info("watcher started")
+    store.enqueue("system", render.system(f"Watcher online: {', '.join(cfg.repos)}."))
 
     history = History(DATA_DIR / "history.db")
     root = DATA_DIR / "repos"
     titles: dict[tuple[str, int], tuple[str, bool]] = {}
     errors: dict[str, float] = {}
+    failures: dict[int, int] = {}
     synced = 0.0
     while True:
         started = time.time()
         apply_decisions(store, history)
-        contexts = {repo: brief.project_context(history, repo, root) for repo in cfg.repos}
-        resume_at = poll_once(
-            github, store, cfg, titles, errors, contexts, history, DATA_DIR / "attachments", root
-        )
+        resume_at = poll_once(github, store, cfg, titles, errors)
+        if resume_at is None:
+            prepare_drafts(github, history, store, failures, DATA_DIR / "attachments", root)
         history_due = cfg.history_minutes and started - synced >= cfg.history_minutes * 60
         if resume_at is None and history_due:
             synced = started

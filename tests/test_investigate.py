@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+from pathlib import Path
 
 import pytest
 
@@ -12,8 +13,6 @@ from tests.test_analysis import FORM, RELEASES
 from tests.test_drafts import (
     ThreadSource,
     add_draft,
-    event,
-    needs,
     put_comment,
     put_issue,
     verdict,
@@ -466,23 +465,43 @@ def test_fetch_code_takes_the_version_from_the_thread(hist, tmp_path):
     assert source.downloads[-1] == f"/repos/{REPO}/tarball/v0.9.12"
 
 
-def test_the_watcher_fetches_the_code_when_queueing_a_draft(
-    agent_cfg, store, hist, tmp_path, monkeypatch
-):
-    monkeypatch.setattr(llm, "summarize", needs())
+def test_the_watcher_fetches_the_code_when_preparing_a_draft(store, hist, tmp_path, monkeypatch):
+    monkeypatch.setattr("watchtower.attachments.download", lambda *a: 0)
     seen = []
     monkeypatch.setattr(
         drafts, "fetch_code", lambda source, h, repo, thread, files, root: seen.append(root)
     )
-    watcher.handle(event(), agent_cfg, store, "", ThreadSource(), hist, tmp_path, tmp_path / "r")
+    add_draft(store, status="prep")
+    watcher.prepare_drafts(ThreadSource(), hist, store, {}, tmp_path, tmp_path / "r")
     assert seen == [tmp_path / "r"]
 
     def broken(*args):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(drafts, "fetch_code", broken)
-    watcher.handle(event(key="k2"), agent_cfg, store, "", ThreadSource(), hist, tmp_path, tmp_path)
+    add_draft(store, "k2", status="prep")
+    watcher.prepare_drafts(ThreadSource(), hist, store, {}, tmp_path, tmp_path)
     assert len(store.drafts("queued")) == 2  # a draft even without the code
+
+
+def test_a_queued_replay_runs_offline_in_the_worker(agent_cfg, store, hist, tmp_path, monkeypatch):
+    from watchtower.worker import Worker
+
+    calls = []
+
+    def fake_run(cfg, history, repo, root, folder, out, numbers, limit, say, source=None):
+        say("#160: assessing")
+        calls.append((repo, numbers, limit, out, source))
+        return ["one outcome"]
+
+    monkeypatch.setattr(evaluate, "run", fake_run)
+    payload = {"repo": REPO, "numbers": [25, [160, 5]], "limit": None, "out": "/x/r.md"}
+    store.add_job("eval", "eval:1", payload)
+    Worker(agent_cfg, store, hist, tmp_path).step()
+    assert calls == [(REPO, [25, (160, 5)], None, Path("/x/r.md"), None)]  # no GitHub
+    (message,) = store.pending()
+    assert "Replay of owner/repo done: 1 issue(s)" in message.text
+    assert store.heartbeats()["worker"][1] == "eval:1: #160: assessing"
 
 
 def test_the_replay_fetches_the_code_as_it_was(agent_cfg, hist, tmp_path, model, monkeypatch):

@@ -6,6 +6,7 @@ import base64
 import dataclasses
 import json
 import sqlite3
+from pathlib import Path
 
 import pytest
 from cryptography.hazmat.primitives import hashes, serialization
@@ -15,7 +16,6 @@ from watchtower import (
     analysis,
     attachments,
     config,
-    drafter,
     drafts,
     gateway,
     llm,
@@ -23,6 +23,7 @@ from watchtower import (
     render,
     snapshot,
     watcher,
+    worker,
 )
 from watchtower.events import Event
 from watchtower.github import GitHubError
@@ -227,16 +228,26 @@ def needs(reply: bool = True):
     return lambda cfg, item, context="": llm.Summary("bug", "SoC stuck.", reply)
 
 
+def report(cfg, store, hist, ev):
+    """The watcher hands the event over; the worker summarises and reports it."""
+
+    watcher.handle(ev, cfg, store)
+    worker.Worker(cfg, store, hist, Path("no-snapshots")).summaries()
+
+
 def test_a_stranger_needing_a_reply_gets_a_draft_on_a_fresh_thread(
     agent_cfg, store, hist, monkeypatch
 ):
     monkeypatch.setattr(llm, "summarize", needs())
-    watcher.handle(event(), agent_cfg, store, "", ThreadSource(), hist)
+    report(agent_cfg, store, hist, event())
+    (draft,) = store.drafts("prep")  # the worker wants one; it can't fetch the thread
+    (message,) = store.pending()
+    assert "drafting a reply" in message.text and store.is_seen(f"{REPO}#7")
+
+    watcher.prepare_drafts(ThreadSource(), hist, store, {})
     (draft,) = store.drafts("queued")
     assert (draft.repo, draft.number, draft.kind, draft.url) == (REPO, 7, "issue", ISSUE_URL)
     assert [c["body"] for c in hist.thread(REPO, 7)["comments"]] == ["Which car?"]
-    (message,) = store.pending()
-    assert "drafting a reply" in message.text and store.is_seen(f"{REPO}#7")
 
 
 @pytest.mark.parametrize(
@@ -252,8 +263,8 @@ def test_no_draft_for_maintainers_bots_prs_or_no_reply_needed(
     agent_cfg, store, hist, monkeypatch, changes, summary_says_reply
 ):
     monkeypatch.setattr(llm, "summarize", needs(summary_says_reply))
-    watcher.handle(event(**changes), agent_cfg, store, "", ThreadSource(), hist)
-    assert store.drafts("queued") == []
+    report(agent_cfg, store, hist, event(**changes))
+    assert store.drafts("prep") == []
 
 
 @pytest.mark.parametrize("summary", [needs(False), lambda cfg, item, context="": None])
@@ -263,24 +274,32 @@ def test_a_strangers_new_issue_gets_a_draft_whatever_the_summary_says(
     # A report answering an earlier question reads as "no reply needed" to the
     # summary model; whether it needs one is the assessment's call.
     monkeypatch.setattr(llm, "summarize", summary)
-    watcher.handle(event(), agent_cfg, store, "", ThreadSource(), hist)
-    assert len(store.drafts("queued")) == 1
+    report(agent_cfg, store, hist, event())
+    assert len(store.drafts("prep")) == 1
 
 
 def test_no_draft_without_agent_model_or_when_turned_off(cfg, agent_cfg, store, hist, monkeypatch):
     monkeypatch.setattr(llm, "summarize", needs())
     off = dataclasses.replace(agent_cfg, draft_replies=False)
-    for c in (cfg, off):
-        watcher.handle(event(), c, store, "", ThreadSource(), hist)
-    assert store.drafts("queued") == []
+    for number, c in enumerate((cfg, off)):
+        report(c, store, hist, event(key=f"k{number}"))
+    assert store.drafts("prep") == []
 
 
-def test_no_draft_when_the_thread_cannot_be_refreshed(agent_cfg, store, hist, monkeypatch):
+def test_a_draft_whose_thread_cannot_be_refreshed_fails_after_some_polls(
+    agent_cfg, store, hist, monkeypatch
+):
     monkeypatch.setattr(llm, "summarize", needs())
-    watcher.handle(event(), agent_cfg, store, "", ThreadSource(fail=True), hist)
-    assert store.drafts("queued") == []
-    (message,) = store.pending()
-    assert "needs a reply" in message.text  # still reported
+    report(agent_cfg, store, hist, event())
+    failures: dict[int, int] = {}
+    for _ in range(watcher.PREP_TRIES - 1):
+        watcher.prepare_drafts(ThreadSource(fail=True), hist, store, failures)
+    assert len(store.drafts("prep")) == 1  # a passing GitHub hiccup costs nothing
+    watcher.prepare_drafts(ThreadSource(fail=True), hist, store, failures)
+    assert store.drafts("prep") == [] and len(store.drafts("failed")) == 1
+    reported, failed = store.pending()
+    assert "drafting a reply" in reported.text
+    assert "failed: the thread could not be fetched" in failed.text and failures == {}
 
 
 def test_a_discussion_reply_goes_under_its_top_level_comment(cfg, store):
@@ -809,17 +828,17 @@ def test_download_keeps_text_skips_the_rest_and_sends_no_token(tmp_path, monkeyp
     assert "1/f1.txt" not in " ".join(r.full_url for r in requests)  # not fetched twice
 
 
-def test_the_watcher_downloads_attachments_when_queueing_a_draft(
-    agent_cfg, store, hist, tmp_path, monkeypatch
+def test_the_watcher_downloads_attachments_when_preparing_a_draft(
+    store, hist, tmp_path, monkeypatch
 ):
-    monkeypatch.setattr(llm, "summarize", needs())
     seen = []
     monkeypatch.setattr(
         attachments,
         "download",
         lambda thread, repo, folder: seen.append((thread["number"], folder)),
     )
-    watcher.handle(event(), agent_cfg, store, "", ThreadSource(), hist, tmp_path)
+    add_draft(store, status="prep")
+    watcher.prepare_drafts(ThreadSource(), hist, store, {}, tmp_path)
     assert seen == [(7, tmp_path)]
     assert len(store.drafts("queued")) == 1
 
@@ -827,7 +846,8 @@ def test_the_watcher_downloads_attachments_when_queueing_a_draft(
         raise RuntimeError("boom")
 
     monkeypatch.setattr(attachments, "download", broken)
-    watcher.handle(event(key="k2"), agent_cfg, store, "", ThreadSource(), hist, tmp_path)
+    add_draft(store, "k2", status="prep")
+    watcher.prepare_drafts(ThreadSource(), hist, store, {}, tmp_path)
     assert len(store.drafts("queued")) == 2  # a draft even without the files
 
 
@@ -902,7 +922,24 @@ def test_generate_without_the_thread_makes_no_call(agent_cfg, store, hist, tmp_p
     assert model.calls == []
 
 
-# -- the drafter --------------------------------------------------------------------------
+# -- the worker ---------------------------------------------------------------------------
+
+
+def test_summaries_run_between_the_passes_of_a_draft(agent_cfg, store, hist, tmp_path, monkeypatch):
+    # A draft takes many minutes; a one-line notification mustn't wait for it.
+    monkeypatch.setattr(llm, "summarize", needs(False))
+    seen = []
+
+    def fake_generate(cfg, draft, history, root, folder, *, beat):
+        watcher.handle(event(kind="issue_comment", key="k-comment"), cfg, store)
+        beat("assessing")
+        seen.append([m.text for m in store.pending()])
+        return None
+
+    monkeypatch.setattr(drafts, "generate", fake_generate)
+    add_draft(store)
+    assert worker.Worker(agent_cfg, store, hist, tmp_path).step()
+    assert any("Comment on issue" in text for text in seen[0])
 
 
 def test_drafter_offers_the_draft_with_buttons_and_takes_replies(
@@ -924,12 +961,12 @@ def test_drafter_offers_the_draft_with_buttons_and_takes_replies(
 
     def fake_generate(cfg, draft, history, root, folder, *, beat):
         beat("assessing")
-        steps.append(store.heartbeats()["drafter"][1])
+        steps.append(store.heartbeats()["worker"][1])
         return result
 
     monkeypatch.setattr(drafts, "generate", fake_generate)
     add_draft(store)
-    drafter.work(store.claim_draft(), agent_cfg, store, hist, tmp_path)
+    worker.Worker(agent_cfg, store, hist, tmp_path).draft(store.claim_draft())
     assert steps == ["owner/repo#7: assessing"]
 
     assessment, message = store.pending()
@@ -954,7 +991,7 @@ def test_drafter_offers_the_draft_with_buttons_and_takes_replies(
 def test_a_failed_draft_is_reported(agent_cfg, store, hist, tmp_path, monkeypatch):
     monkeypatch.setattr(drafts, "generate", lambda *a, **k: None)
     add_draft(store)
-    drafter.work(store.claim_draft(), agent_cfg, store, hist, tmp_path)
+    worker.Worker(agent_cfg, store, hist, tmp_path).draft(store.claim_draft())
     (message,) = store.pending()
     assert "failed" in message.text and message.buttons == ()
     assert [d.status for d in store.drafts("failed")] == ["failed"]
@@ -963,7 +1000,7 @@ def test_a_failed_draft_is_reported(agent_cfg, store, hist, tmp_path, monkeypatc
 def test_a_message_too_long_to_read_whole_is_not_drafted(agent_cfg, store, hist, tmp_path, model):
     put_issue(hist, body="x" * (drafts.MAX_NEWEST + 1))
     add_draft(store)
-    drafter.work(store.claim_draft(), agent_cfg, store, hist, tmp_path)
+    worker.Worker(agent_cfg, store, hist, tmp_path).draft(store.claim_draft())
     assert model.calls == [] and model.acts == []
     (message,) = store.pending()
     assert f"failed: the message to answer has {drafts.MAX_NEWEST + 1} characters" in message.text

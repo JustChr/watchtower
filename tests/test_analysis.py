@@ -399,6 +399,8 @@ def test_eval_command_takes_cuts_at_a_comment(cfg, tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
     monkeypatch.setattr(config, "read_secret", lambda name: "t")
     monkeypatch.setattr(gh, "GitHub", lambda token: None)
-    monkeypatch.setattr(evaluate, "run", lambda *a, **k: seen.update(numbers=a[6]))
+    monkeypatch.setattr(evaluate, "prepare", lambda *a: seen.update(prepared=a[2]))
     assert cli.evaluate(["o/r", "160@5", "7"]) == 0
-    assert seen["numbers"] == [(160, 5), 7]
+    assert seen["prepared"] == []  # no such issues in the empty history
+    (job,) = Store(tmp_path / "watchtower.db").jobs("queued")  # the worker replays it
+    assert job.kind == "eval" and job.payload["numbers"] == [[160, 5], 7]

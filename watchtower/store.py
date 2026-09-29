@@ -1,12 +1,17 @@
 """The shared SQLite database: what has been seen, where polling stands, the outbox,
-the user's button presses and replies (decisions), and the reply drafts.
+the user's button presses and replies (decisions), the model's jobs and the reply
+drafts.
 
 Each process -- and each thread -- opens its own ``Store``. WAL mode lets the
 watcher write while the gateway reads.
 
-A draft moves: ``queued`` (watcher) → ``drafting`` → ``ready`` (drafter) →
-``posting`` → ``posted`` (poster), or → ``rejected`` / ``superseded`` (a newer
-draft for the same thread) / ``failed``. Each text the user could approve is a
+A ``job`` is model work the watcher hands the worker (a summary, a brief, a
+replay): ``queued`` → ``running`` → ``done`` / ``failed``.
+
+A draft moves: ``prep`` (worker: it needs one) → ``queued`` (watcher: thread,
+files and code fetched) → ``drafting`` → ``ready`` (worker) → ``posting`` →
+``posted`` (poster), or → ``rejected`` / ``superseded`` (a newer draft for the
+same thread) / ``failed``. Each text the user could approve is a
 ``draft_version``: the model's first, then each of the user's edits.
 """
 
@@ -44,6 +49,15 @@ CREATE TABLE IF NOT EXISTS decision (
     at REAL NOT NULL,
     applied REAL,
     text TEXT                    -- a reply's text
+);
+CREATE TABLE IF NOT EXISTS job (
+    id INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL,              -- summary, brief, eval
+    key TEXT NOT NULL,               -- what it is about; one open job per key
+    payload TEXT NOT NULL,           -- JSON
+    status TEXT NOT NULL,
+    created REAL NOT NULL,
+    updated REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS draft (
     id INTEGER PRIMARY KEY,
@@ -100,6 +114,14 @@ class Outgoing:
     silent: bool
     attempts: int
     buttons: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True)
+class Job:
+    id: int
+    kind: str
+    key: str
+    payload: dict
 
 
 @dataclass(frozen=True)
@@ -179,8 +201,10 @@ class Store:
         seen_key: str | None = None,
         buttons: list[tuple[str, str]] | None = None,
         ref: str | None = None,
+        done_job: int | None = None,
     ) -> None:
-        """Queue a message; with ``seen_key``, mark it seen in the same transaction.
+        """Queue a message; with ``seen_key``, mark it seen in the same transaction,
+        with ``done_job``, finish that job in it (a restart never reports twice).
 
         ``buttons`` are ``(label, callback_data)`` pairs, shown in one row. ``ref``
         (``kind:id``) makes the user's Telegram replies to the message count.
@@ -195,6 +219,8 @@ class Store:
             )
             if seen_key is not None:
                 self.mark_seen(seen_key)
+            if done_job is not None:
+                self.finish_job(done_job)
 
     def pending(self, limit: int = 10) -> list[Outgoing]:
         rows = self.db.execute(
@@ -267,6 +293,67 @@ class Store:
     def mark_applied(self, decision_id: int) -> None:
         self.db.execute("UPDATE decision SET applied = ? WHERE id = ?", (time.time(), decision_id))
 
+    # -- jobs (model work for the worker) ------------------------------------
+
+    def add_job(self, kind: str, key: str, payload: dict, *, seen_key: str | None = None) -> bool:
+        """Queue a job unless one for ``key`` is still open; with ``seen_key``, mark
+        that seen in the same transaction. Returns whether it was queued."""
+
+        now = time.time()
+        with self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            open_job = self.db.execute(
+                "SELECT 1 FROM job WHERE key = ? AND status IN ('queued', 'running')", (key,)
+            ).fetchone()
+            if open_job is None:
+                self.db.execute(
+                    "INSERT INTO job (kind, key, payload, status, created, updated)"
+                    " VALUES (?, ?, ?, 'queued', ?, ?)",
+                    (kind, key, json.dumps(payload, ensure_ascii=False), now, now),
+                )
+            if seen_key is not None:
+                self.mark_seen(seen_key)
+        return open_job is None
+
+    def claim_job(self, kinds: tuple[str, ...]) -> Job | None:
+        """The oldest queued job of one of ``kinds``, now ``running``."""
+
+        marks = ", ".join("?" * len(kinds))
+        with self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            row = self.db.execute(
+                f"SELECT id, kind, key, payload FROM job WHERE status = 'queued'"
+                f" AND kind IN ({marks}) ORDER BY id LIMIT 1",
+                kinds,
+            ).fetchone()
+            if row is None:
+                return None
+            self.db.execute(
+                "UPDATE job SET status = 'running', updated = ? WHERE id = ?",
+                (time.time(), row[0]),
+            )
+        return Job(row[0], row[1], row[2], json.loads(row[3]))
+
+    def finish_job(self, job_id: int, *, failed: bool = False) -> None:
+        self.db.execute(
+            "UPDATE job SET status = ?, updated = ? WHERE id = ?",
+            ("failed" if failed else "done", time.time(), job_id),
+        )
+
+    def requeue_jobs(self) -> None:
+        """Jobs cut off by a restart go back in the queue."""
+
+        self.db.execute(
+            "UPDATE job SET status = 'queued', updated = ? WHERE status = 'running'",
+            (time.time(),),
+        )
+
+    def jobs(self, status: str) -> list[Job]:
+        rows = self.db.execute(
+            "SELECT id, kind, key, payload FROM job WHERE status = ? ORDER BY id", (status,)
+        ).fetchall()
+        return [Job(r[0], r[1], r[2], json.loads(r[3])) for r in rows]
+
     # -- drafts --------------------------------------------------------------
 
     def add_draft(
@@ -280,14 +367,24 @@ class Store:
         title: str,
         url: str,
         reply_to: str = "",
+        status: str = "queued",
     ) -> None:
-        """Queue a draft for the drafter; an event gets at most one."""
+        """Add a draft (``prep``: the watcher fetches its thread first; ``queued``:
+        ready for the worker); an event gets at most one."""
 
         now = time.time()
         self.db.execute(
             "INSERT OR IGNORE INTO draft (event_key, repo, number, kind, topic, title, url,"
-            " reply_to, status, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
-            (event_key, repo, number, kind, topic, title, url, reply_to, now, now),
+            " reply_to, status, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (event_key, repo, number, kind, topic, title, url, reply_to, status, now, now),
+        )
+
+    def prepared(self, draft_id: int) -> None:
+        """The watcher fetched what the draft needs: over to the worker."""
+
+        self.db.execute(
+            "UPDATE draft SET status = 'queued', updated = ? WHERE id = ? AND status = 'prep'",
+            (time.time(), draft_id),
         )
 
     def draft(self, draft_id: int) -> Draft | None:
@@ -431,6 +528,11 @@ class Store:
             " ON CONFLICT(name) DO UPDATE SET at = excluded.at, detail = excluded.detail",
             (name, time.time(), detail),
         )
+
+    def forget_beat(self, name: str) -> None:
+        """A process that no longer exists leaves /status."""
+
+        self.db.execute("DELETE FROM heartbeat WHERE name = ?", (name,))
 
     def heartbeats(self) -> dict[str, tuple[float, str]]:
         rows = self.db.execute("SELECT name, at, detail FROM heartbeat").fetchall()

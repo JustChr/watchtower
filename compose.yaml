@@ -1,7 +1,8 @@
-# Watchtower: watcher, gateway, drafter, poster. Deploy as a Portainer stack or with
+# Watchtower: watcher, gateway, worker, poster. Deploy as a Portainer stack or with
 # `docker compose up -d`. Host prerequisites are in README.md.
 # The image is built by .github/workflows/image.yml; nothing is built on the host.
-# Each service holds only its own secret; the drafter holds none and has no internet.
+# Each service holds only its own secret. All model work is the worker's: it holds
+# none and has no internet, and it's the only service that can reach the model.
 
 name: watchtower
 
@@ -29,7 +30,7 @@ services:
     <<: *service
     command: [watcher]
     secrets: [github_read]
-    networks: [egress, llm]   # llm: reaches the ollama container
+    networks: [egress]        # GitHub only; never talks to the model
     healthcheck:
       test: [CMD, python, -m, watchtower, health, watcher, "900"]
       interval: 60s
@@ -45,12 +46,12 @@ services:
       interval: 60s
       start_period: 30s
 
-  drafter:
+  worker:
     <<: *service
-    command: [drafter]
+    command: [worker]
     networks: [llm]           # internal: Ollama only, no internet, no secrets
-    healthcheck:              # a draft can take agent_timeout_seconds (900)
-      test: [CMD, python, -m, watchtower, health, drafter, "1200"]
+    healthcheck:              # one model call can take agent_timeout_seconds (900)
+      test: [CMD, python, -m, watchtower, health, worker, "1200"]
       interval: 60s
       start_period: 30s
 

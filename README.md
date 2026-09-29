@@ -10,20 +10,28 @@ Later: PR reviews by a sandboxed worker agent.
 ## How it fits together
 
 ```
-GitHub ─poll─> watcher ──outbox (SQLite)──> gateway ──> Telegram group
-  ▲               │  └─ draft queue ─> drafter   │ presses,  ├ 🩺 Triage   issues + comments, drafts
-  │               │                      │       │ replies   ├ 🔍 Reviews  PRs + comments
-  │               └──── watchtower-llm ──┴─> ollama          ├ 💬 Replies  discussions, drafts
-  │                     (internal, no internet)  ▼           └ ⚙️ System   startup, errors, /status
-  └──────────────── approved text ─────────── poster
+GitHub ─poll─> watcher ── jobs, drafts ──> worker ──watchtower-llm──> ollama
+  ▲   (threads, files, code → /data)         │     (internal, no internet)
+  │                                          ▼
+  │                                  outbox (SQLite) ──> gateway ──> Telegram group
+  │                                          ▲             │ presses,  ├ 🩺 Triage   issues + comments, drafts
+  │                                          │             │ replies   ├ 🔍 Reviews  PRs + comments
+  │                                          │             ▼           ├ 💬 Replies  discussions, drafts
+  └───────────── approved text ──────────── poster <── decisions      └ ⚙️ System   startup, errors, /status
 ```
 
 | Service | Holds | Networks |
 |---|---|---|
-| `watcher` | GitHub **read-only** token | `egress`, `watchtower-llm` |
+| `watcher` | GitHub **read-only** token | `egress` only: no model |
 | `gateway` | Telegram bot token | `egress` |
-| `drafter` | **nothing** | `watchtower-llm` only: no internet |
+| `worker` | **nothing** | `watchtower-llm` only: no internet |
 | `poster` | the GitHub App's private key | `egress` only: no model |
+
+All model work (summaries, briefs, drafts, replays) is the **worker's**, one
+job at a time: the only service that feeds strangers' text to a model holds no
+secret and can't reach the internet. The watcher fetches what a job needs
+(threads, attached files, code at a release) into `/data` first. Summaries go
+first, and a long draft runs the waiting ones between its passes.
 
 - Polling, not webhooks: no public endpoint. Unchanged repos answer `304`,
   which costs no rate limit.
@@ -64,10 +72,11 @@ ls /opt/watchtower/data/repos/JustChr/BavarianData
 
 ## Reply drafts
 
-When the summary says a stranger's new issue, discussion, or comment on one
-**needs a reply** (not maintainers, bots or PRs), the watcher refreshes that
-thread in the history and queues a draft. The **drafter** has `agent_model`
-write it from:
+Every stranger's new issue or discussion gets a draft, and so does a
+stranger's comment on one when the summary says it **needs a reply** (not
+maintainers, bots or PRs). The worker asks for it; the watcher refreshes that
+thread in the history, downloads its files and the code at the author's
+version; then the **worker** has `agent_model` write it from:
 
 - trusted, as instructions: the approved brief (else the README's opening),
   the repo's own `.claude/skills/triage/SKILL.md` and its issue forms;
@@ -99,6 +108,14 @@ The model's reply loses `@mentions` and every link outside the repo. If
 several comments arrive in one thread, only the newest gets a draft, and a
 newer draft outdates the older one. Every version, and every rejection reason,
 stays in `watchtower.db` (`draft`, `draft_version`) as feedback for later.
+
+**Replay** closed issues to measure the drafts (the report puts the model's
+assessment and reply next to your real answer):
+```bash
+sudo docker exec watchtower-watcher-1 python -m watchtower eval JustChr/BavarianData 25 23 160@5
+```
+The watcher fetches the files and code, the worker replays; ⚙️ System says when
+the report (`/opt/watchtower/data/eval/`) is done.
 
 ## Host setup (once)
 

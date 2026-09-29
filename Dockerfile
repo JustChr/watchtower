@@ -1,4 +1,4 @@
-# One image, four services (watcher, gateway, drafter, poster) -- they differ only in
+# One image, four services (watcher, gateway, worker, poster) -- they differ only in
 # command, secrets and networks.
 FROM python:3.14-slim
 

@@ -2,15 +2,15 @@
 
 This is what later agents learn a repo from: earlier reports of the same
 problem, how they were resolved, and how the maintainers answered. The watcher
-keeps it in sync (the first sync pulls the whole history); a worker will get a
-read-only copy, so it never needs a token or the internet.
+keeps it in sync (the first sync pulls the whole history); the worker reads it
+from the shared volume, so it never needs a token or the internet.
 
 Everything here was written on GitHub and stays untrusted data. The one field
 GitHub computes itself is ``association`` (OWNER, MEMBER, CONTRIBUTOR, ...):
 it is how maintainer-written text is told apart from strangers' text.
 
 The same file holds the repo briefs (see ``brief``) with their approval state,
-and the release list (with the maintainers' notes), for the offline drafter.
+and the release list (with the maintainers' notes), for the offline worker. The worker writes the briefs it's asked for.
 
 Issues, PRs and discussions share one number space per repo, so an item is
 ``(repo, number)``. Syncs upsert, so overlapping pages are harmless.

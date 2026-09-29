@@ -1,6 +1,6 @@
 """Files attached to issues and comments (diagnostics, logs), for the drafts.
 
-The watcher downloads them when it queues a draft; the drafter, which has no
+The watcher downloads them when it prepares a draft; the worker, which has no
 internet, reads them from ``/data/attachments/<owner>/<name>/``. Only GitHub's
 own upload links count (``github.com/user-attachments/files/<id>/<name>`` and
 the older ``github.com/<owner>/<repo>/files/<id>/<name>``), fetched without a
@@ -88,7 +88,7 @@ def download(
 ) -> int:
     """Fetch the thread's files not fetched yet; returns how many were saved.
 
-    A file that fails, is too big or isn't text is skipped (the drafter says so).
+    A file that fails, is too big or isn't text is skipped (the draft says so).
     No token is sent: not to github.com, and not along the redirect to storage.
     """
 

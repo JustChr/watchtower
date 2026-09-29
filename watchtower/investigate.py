@@ -4,7 +4,7 @@ One crammed prompt only lets the model judge what the reporter spelled out. So
 before the assessment, the agent model may look things up, step by step:
 
 - the project's **code** at the author's version (``snapshot.version_path``,
-  fetched by the watcher: the drafter has no internet), else the default branch;
+  fetched by the watcher: the worker has no internet), else the default branch;
 - the **attached files**, searched and read in parts, however big they are;
 - the **history**: earlier issues, PRs and discussions of the repo.
 

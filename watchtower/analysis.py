@@ -1,7 +1,7 @@
 """Judging a thread before answering it: findings, assessment, verification.
 
 Time and tokens are free on this box; context is not. So instead of cutting
-input down to one prompt, the drafter takes several focused passes with the
+input down to one prompt, the worker takes several focused passes with the
 agent model (and before the assessment, ``investigate`` lets it look things up
 in the code, the files and the history):
 
