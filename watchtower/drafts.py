@@ -106,8 +106,9 @@ it and never answer a different question instead.
 
 If the assessment names a decision for the maintainer ("Decision"), don't make it,
 not even implicitly by building on one option. Where the answer belongs, write a
-line of its own: [YOUR DECISION: the choice, in a few words]. The maintainer fills
-it in.
+line of its own that names the options as the message does, like
+[YOUR DECISION: A (keep the dates naive) or B (store them with their zone)]. The
+maintainer fills it in.
 
 The reply:
 - answers the message marked NEWEST, in the language it is written in;
@@ -262,6 +263,23 @@ def _cut(text: str, limit: int) -> str:
 
 
 DECISION_LINE = "[YOUR DECISION"
+_DECISION = re.compile(r"\[YOUR DECISION:?([^\]\n]*)\]", re.IGNORECASE)
+# What a model writes instead of naming the options: an old prompt's placeholder.
+_PLACEHOLDER = re.compile(
+    r"(?:the choice(?:, in a few words)?|the options?|\.\.\.|…)?\.?", re.IGNORECASE
+)
+
+
+def name_decision(reply: str, decision: str) -> str:
+    """``reply`` with every ``[YOUR DECISION: ...]`` line that only repeats the
+    prompt's placeholder naming the assessment's ``decision`` instead."""
+
+    def named(match: re.Match) -> str:
+        if _PLACEHOLDER.fullmatch(match[1].strip()):
+            return f"[YOUR DECISION: {decision}]"
+        return match[0]
+
+    return _DECISION.sub(named, reply) if decision else reply
 
 
 def open_decision(text: str) -> bool:
@@ -785,6 +803,7 @@ def generate(
         return None
     reply, note = parsed
     decision = verdict.decision.rstrip(".")
+    reply = name_decision(reply, decision)
     if decision and not open_decision(reply):
         note = f"⚠️ Yours to decide: {decision}. This reply may decide it for you. {note}"
     elif decision:

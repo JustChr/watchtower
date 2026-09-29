@@ -1067,6 +1067,30 @@ def test_what_is_asked_reaches_the_reply_and_a_decision_stays_open(
     result = drafts.generate(agent_cfg, draft, hist, tmp_path)
     assert result.note == f"⚖️ Yours to decide: {decision[:-1]}. Fill it in before posting."
 
+    # #160: the model copied the prompt's placeholder instead of naming the options.
+    model.reply = {"reply": "Thanks!\n\n[YOUR DECISION: the choice, in a few words]", "note": ""}
+    result = drafts.generate(agent_cfg, draft, hist, tmp_path)
+    assert result.reply == f"Thanks!\n\n[YOUR DECISION: {decision[:-1]}]"
+
+
+@pytest.mark.parametrize(
+    ("line", "named"),
+    [
+        ("[YOUR DECISION: the choice, in a few words]", True),
+        ("[YOUR DECISION: the options.]", True),
+        ("[YOUR DECISION: …]", True),
+        ("[YOUR DECISION]", True),
+        ("[your decision: ...]", True),
+        ("[YOUR DECISION: A (naive) or B (aware)]", False),
+        ("[YOUR DECISION: the choice between A and B]", False),  # it named them
+    ],
+)
+def test_a_placeholder_decision_line_gets_the_assessments_options(line, named):
+    reply = f"Thanks.\n{line}\nBye."
+    expected = "Thanks.\n[YOUR DECISION: A or B]\nBye." if named else reply
+    assert drafts.name_decision(reply, "A or B") == expected
+    assert drafts.name_decision(reply, "") == reply  # no decision: nothing to name
+
 
 # -- Telegram: buttons, replies, markdown --------------------------------------------------
 

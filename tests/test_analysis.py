@@ -234,6 +234,28 @@ def test_a_quote_is_located_ignoring_case_and_whitespace():
     assert analysis.locate("  ", "thread", sources) is None
 
 
+def test_a_quote_without_the_markdown_marks_still_checks_out():
+    # #160: the message said "**A or B?**" and `as_local`; the model quoted it plain.
+    newest = "Two shapes. **A or B?** It uses `dt_util.as_local` today."
+    verdict = analysis.parse_verdict(
+        json.dumps(
+            {
+                "category": "contribution",
+                "confidence": "high",
+                "evidence": [{"source": "thread", "quote": "uses dt_util.as_local", "point": "p"}],
+                "missing": [],
+                "code": "",
+                "fix": "",
+                "asks": ["A or B?"],
+                "decision": "",
+            }
+        ),
+        {"thread": newest},
+        newest,
+    )
+    assert verdict.evidence[0].verified and verdict.asks[0].verified
+
+
 def test_the_rendered_assessment_always_fits_a_message():
     from tests.test_drafts import add_draft
 

@@ -162,7 +162,9 @@ FINDINGS_SCHEMA = {
     "required": ["findings"],
 }
 
-_SPACE = re.compile(r"\s+")
+# Left out when comparing quotes: whitespace, and Markdown's emphasis and code
+# marks (a model quoting "**A or B?**" tends to drop the stars).
+_UNCOMPARED = re.compile(r"[\s*`]+")
 
 
 @dataclass(frozen=True)
@@ -233,9 +235,10 @@ def _clean(text: object, limit: int) -> str:
 
 
 def _squash(text: str) -> str:
-    """For comparing quotes: case and whitespace don't count (JSON may be minified)."""
+    """For comparing quotes: case, whitespace (JSON may be minified) and Markdown's
+    ``*`` and backticks don't count."""
 
-    return _SPACE.sub("", text).lower()
+    return _UNCOMPARED.sub("", text).lower()
 
 
 def locate(quote: str, source: str, sources: dict[str, str]) -> str | None:
