@@ -50,7 +50,8 @@ CREATE TABLE IF NOT EXISTS decision (
     ref INTEGER NOT NULL,
     at REAL NOT NULL,
     applied REAL,
-    text TEXT                    -- a reply's text
+    text TEXT,                   -- a reply's text
+    origin TEXT NOT NULL DEFAULT 'telegram'  -- telegram (the allowed user), web (anyone on the LAN)
 );
 CREATE TABLE IF NOT EXISTS job (
     id INTEGER PRIMARY KEY,
@@ -103,6 +104,7 @@ MIGRATIONS = (
     ("decision", "text", "TEXT"),
     ("draft", "attachments", "TEXT NOT NULL DEFAULT ''"),
     ("draft", "verdict", "TEXT NOT NULL DEFAULT ''"),
+    ("decision", "origin", "TEXT NOT NULL DEFAULT 'telegram'"),
 )
 # After the migrations: they may index a migrated column.
 INDEXES = "CREATE INDEX IF NOT EXISTS outbox_message ON outbox (message_id);"
@@ -295,11 +297,31 @@ class Store:
 
     # -- decisions (button presses and replies, recorded by the gateway) -----
 
-    def record_decision(self, kind: str, action: str, ref: int, text: str | None = None) -> None:
+    def record_decision(
+        self, kind: str, action: str, ref: int, text: str | None = None, origin: str = "telegram"
+    ) -> None:
+        """``origin`` is who asked: ``telegram`` (the gateway checked it's the allowed
+        user) or ``web`` (anyone on the LAN: never enough to post)."""
+
         self.db.execute(
-            "INSERT INTO decision (kind, action, ref, at, text) VALUES (?, ?, ?, ?, ?)",
-            (kind, action, ref, time.time(), text),
+            "INSERT INTO decision (kind, action, ref, at, text, origin) VALUES (?, ?, ?, ?, ?, ?)",
+            (kind, action, ref, time.time(), text, origin),
         )
+
+    def decision_origin(self, decision_id: int) -> str | None:
+        row = self.db.execute("SELECT origin FROM decision WHERE id = ?", (decision_id,)).fetchone()
+        return row[0] if row else None
+
+    def decisions(self, kind: str, ref: int) -> list[dict]:
+        """Every decision on one thing (a draft: its id, or its versions' ids), oldest first."""
+
+        rows = self.db.execute(
+            "SELECT id, action, ref, at, applied, text, origin FROM decision"
+            " WHERE kind = ? AND ref = ? ORDER BY id",
+            (kind, ref),
+        ).fetchall()
+        names = ("id", "action", "ref", "at", "applied", "text", "origin")
+        return [dict(zip(names, row, strict=True)) for row in rows]
 
     def open_decisions(self, kind: str) -> list[tuple[int, str, int, str | None]]:
         """``(id, action, ref, text)`` not yet applied, oldest first."""

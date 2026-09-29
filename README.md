@@ -26,6 +26,7 @@ GitHub ─poll─> watcher ── jobs, drafts ──> worker ──watchtower-l
 | `gateway` | Telegram bot token | `egress` |
 | `worker` | **nothing** | `watchtower-llm` only: no internet |
 | `poster` | the GitHub App's private key | `egress` only: no model |
+| `web` | **nothing** | the LAN: port 8780 on the box |
 
 All model work (summaries, briefs, drafts, replays) is the **worker's**, one
 job at a time: the only service that feeds strangers' text to a model holds no
@@ -129,6 +130,29 @@ sudo docker exec watchtower-watcher-1 python -m watchtower eval JustChr/Bavarian
 The watcher fetches the files and code, the worker replays; ⚙️ System says when
 the report (`/opt/watchtower/data/eval/`) is done.
 
+## Web UI
+
+`http://<box>:8780` on your LAN: how Watchtower works (a live signal-box panel
+of the services, lit where work is in transit), what it's doing now, and
+everything it did: every message, job and draft, each draft's passes with the
+investigation, the checked assessment and every version, and **every model
+call with its full prompt and answer** (the worker records them in
+`/data/trace.db`, kept 90 days). Your notes, the repo docs, briefs and releases
+per repo.
+
+No login, so it's built to be harmless without one: it holds no secret, and it
+can only edit or reject a draft, or **send a version to Telegram**, where your
+✅ Post tap is still what posts (the poster refuses a post from anywhere else).
+Other websites can't use your browser against it: a POST needs a custom header
+(which forces a CORS preflight it never grants), and it answers only to IP
+addresses, `localhost` and the names in `[web] hosts` (DNS rebinding). Add the
+name you open it by there:
+
+```toml
+[web]
+hosts = ["jarvis.home.arpa"]
+```
+
 ## Host setup (once)
 
 1. **Secrets**, readable only by the container user (UID 10001):
@@ -170,7 +194,7 @@ a push redeploys by itself; otherwise *Pull and redeploy*.
 
 **CLI:** copy or clone this folder to the host, then `docker compose up -d`.
 
-All four containers should turn *healthy* within a minute and post "online" into
+All five containers should turn *healthy* within a minute and post "online" into
 ⚙️ System (the poster names the App it posts as). Send `/status` or `/ping` in the
 group to check the gateway.
 

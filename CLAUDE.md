@@ -34,6 +34,15 @@ end-to-end locally.
     the judged version), whole within `DOCS_SHARE`, the rest via `search_docs`.
   - `poster.py` — the only GitHub writer: holds the App key (`github_app.py`),
     applies draft decisions, posts exactly the approved version; no model.
+  - `web.py` — the web UI (stdlib `http.server`, JSON API) + `web/` (one
+    vanilla JS/CSS page, vendored Barlow fonts; no build step). LAN, no
+    login, holds no secret: it can edit/reject drafts and "Post" = re-offer in
+    Telegram; decisions carry `origin` (`telegram`/`web`) and the poster posts
+    only Telegram ones. Guards: `X-Watchtower` header on POST, Host allowlist
+    (`[web] hosts`), strict CSP; outside text is built as DOM text, never HTML.
+  - `trace.py` — every model call (full prompt + answer, subject, step,
+    seconds) in `/data/trace.db`, recorded by the worker via `llm.tracer`,
+    pruned after 90 days.
   - `gateway.py` — the only Telegram client (a bot allows one `getUpdates`
     poller); holds the bot token; answers only the configured user in the
     configured group.
@@ -57,7 +66,7 @@ end-to-end locally.
     the watcher (briefs) or the poster (drafts) applies them. `callback_data`
     is `kind:action:id`.
   - `github.py`, `telegram.py`, `config.py`, `__main__.py`.
-- `compose.yaml`, `Dockerfile` — one image, four services.
+- `compose.yaml`, `Dockerfile` — one image, five services.
 - `config.example.toml` — template; the real `config.toml` lives only on the host.
 - `tests/` — pytest, no network.
 

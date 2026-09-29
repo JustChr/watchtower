@@ -10,6 +10,10 @@ It applies the user's decisions on drafts, as the gateway recorded them:
 - a Telegram reply to a ready draft is an edit: it becomes a new version, shown
   with its own buttons; a reply to a rejected draft is the reason.
 
+The web UI records the same edits and rejections (origin ``web``). It can't
+post: its "Post" only offers that version in Telegram again (``offer``), and a
+post decision from anywhere but Telegram is refused.
+
 A post is claimed (``posting``) before GitHub is called, so it never happens
 twice. If it may have gone through after all (timeout, 5xx, restart), the user
 is told to check GitHub instead of it being retried.
@@ -29,6 +33,7 @@ from .store import Draft, Store, Version
 _LOGGER = logging.getLogger(__name__)
 
 MAX_REASON = 2000
+WEB_OFFER = "🌐 Sent from the web UI: ✅ Post posts exactly this version."
 
 
 class Poster(Protocol):
@@ -73,6 +78,10 @@ def post(store: Store, cfg: Config, poster: Poster, decision_id: int, version_id
         _stale(store, version_id)
         return
     draft, version = current
+    if store.decision_origin(decision_id) != "telegram":
+        store.mark_applied(decision_id)
+        _LOGGER.warning("post decision %d not from Telegram: refused", decision_id)
+        return
     if drafts.open_decision(version.text):
         store.mark_applied(decision_id)
         text = (
@@ -113,6 +122,17 @@ def reject(store: Store, decision_id: int, version_id: int) -> None:
     store.mark_applied(decision_id)
 
 
+def web_offer(store: Store, decision_id: int, version_id: int) -> None:
+    """The web UI's "Post": show the version in Telegram again, for your tap."""
+
+    current = _current(store, version_id)
+    if current is None:
+        _stale(store, version_id)
+    else:
+        drafts.offer(store, *current, lead=WEB_OFFER)
+    store.mark_applied(decision_id)
+
+
 def reply(store: Store, decision_id: int, draft_id: int, text: str) -> None:
     draft = store.draft(draft_id)
     text = text.strip()
@@ -145,6 +165,8 @@ def apply_decisions(store: Store, cfg: Config, poster: Poster) -> None:
                 reject(store, decision_id, ref)
             case "reply":
                 reply(store, decision_id, ref, text or "")
+            case "offer":
+                web_offer(store, decision_id, ref)
             case _:
                 store.mark_applied(decision_id)
 

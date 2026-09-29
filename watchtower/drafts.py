@@ -819,12 +819,12 @@ def generate(
     return Result(reply, _clip(note, MAX_NOTE), attachment_summary(files), verdict, seconds)
 
 
-def offer(store: Store, draft: Draft, version: Version, error: str = "") -> None:
+def offer(store: Store, draft: Draft, version: Version, error: str = "", lead: str = "") -> None:
     """Show ``version`` in Telegram with its buttons; replies to it count as edits."""
 
     store.enqueue(
         draft.topic,
-        render.draft(draft, version, error),
+        render.draft(draft, version, error, lead),
         url=draft.url,
         buttons=[
             ("✅ Post", f"draft:post:{version.id}"),

@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from . import brief, drafts, evaluate, llm, render, snapshot
@@ -24,10 +26,12 @@ from .config import DATA_DIR, Config
 from .events import Event
 from .history import MAINTAINERS, History
 from .store import Draft, Job, Store
+from .trace import Trace
 
 _LOGGER = logging.getLogger(__name__)
 
 IDLE_SECONDS = 5
+PRUNE_SECONDS = 3600  # how often old model calls leave the trace
 
 # New threads: every one from a stranger gets a draft, whatever the summary says.
 OPENING_KINDS = frozenset({"issue", "discussion"})
@@ -35,22 +39,46 @@ OPENING_KINDS = frozenset({"issue", "discussion"})
 
 class Worker:
     def __init__(
-        self, cfg: Config, store: Store, history: History, root: Path, files: Path | None = None
+        self,
+        cfg: Config,
+        store: Store,
+        history: History,
+        root: Path,
+        files: Path | None = None,
+        trace: Trace | None = None,
     ) -> None:
         self.cfg = cfg
         self.store = store
         self.history = history
         self.root = root  # the code snapshots
         self.files = files  # the downloaded attachments
+        self.trace = trace  # every model call, with what it was for
         self.busy = ""  # the long job in progress, for the heartbeat
 
     # -- the loop -------------------------------------------------------------
+
+    @contextmanager
+    def about(self, subject: str) -> Iterator[None]:
+        """The model calls made meanwhile are for ``subject`` (``draft:12``, ...);
+        a summary run between a draft's passes gets its own and hands it back."""
+
+        if self.trace is None:
+            yield
+            return
+        outer = (self.trace.subject, self.trace.step)
+        self.trace.subject, self.trace.step = subject, ""
+        try:
+            yield
+        finally:
+            self.trace.subject, self.trace.step = outer
 
     def between(self, step: str) -> None:
         """Called between the passes of a long job: a heartbeat (each pass can take up
         to agent_timeout), then the summaries that came in meanwhile."""
 
         self.store.beat("worker", f"{self.busy}: {step}" if self.busy else step)
+        if self.trace is not None:
+            self.trace.step = step
         self.summaries()
 
     def summaries(self) -> int:
@@ -77,7 +105,8 @@ class Worker:
         if job is not None:
             self.busy = job.key
             try:
-                self._run(job, self.brief if job.kind == "brief" else self.replay)
+                with self.about(job.key):
+                    self._run(job, self.brief if job.kind == "brief" else self.replay)
             finally:
                 self.busy = ""
             return True
@@ -99,7 +128,8 @@ class Worker:
         cfg, store = self.cfg, self.store
         event = Event(**job.payload)
         context = brief.project_context(self.history, event.repo, self.root)
-        summary = llm.summarize(cfg, event.for_model(), context)
+        with self.about(f"event:{event.key}"):
+            summary = llm.summarize(cfg, event.for_model(), context)
         drafting = wants_draft(event, summary, cfg)
         if drafting:
             store.add_draft(
@@ -124,18 +154,19 @@ class Worker:
         store = self.store
         label = f"{draft.repo}#{draft.number}"
         self.busy = label
-        self.between("starting")
         why = ""
         try:
-            result = drafts.generate(
-                self.cfg,
-                draft,
-                self.history,
-                self.root,
-                self.files,
-                beat=self.between,
-                stages=StoredStages(store, draft),
-            )
+            with self.about(f"draft:{draft.id}"):
+                self.between("starting")
+                result = drafts.generate(
+                    self.cfg,
+                    draft,
+                    self.history,
+                    self.root,
+                    self.files,
+                    beat=self.between,
+                    stages=StoredStages(store, draft),
+                )
         except drafts.Unfit as err:
             result, why = None, f": {err}"
         finally:
@@ -268,7 +299,9 @@ def _check_model(cfg: Config) -> str:
 def run(cfg: Config) -> None:
     store = Store(DATA_DIR / "watchtower.db")
     history = History(DATA_DIR / "history.db")
-    worker = Worker(cfg, store, history, DATA_DIR / "repos", DATA_DIR / "attachments")
+    trace = Trace(DATA_DIR / "trace.db")
+    llm.tracer = trace.record
+    worker = Worker(cfg, store, history, DATA_DIR / "repos", DATA_DIR / "attachments", trace)
     store.forget_beat("drafter")  # this process's name before it did all model work
     store.requeue_jobs()
     store.requeue_drafting()
@@ -276,7 +309,11 @@ def run(cfg: Config) -> None:
     status = f"{_check_model(cfg)}; {drafting}"
     _LOGGER.info("worker started: %s", status)
     store.enqueue("system", render.system(f"Worker online: {status}."))
+    pruned = 0.0
     while True:
         store.beat("worker", "idle")
+        if time.time() - pruned > PRUNE_SECONDS:
+            pruned = time.time()
+            trace.prune()
         if not worker.step():
             time.sleep(IDLE_SECONDS)

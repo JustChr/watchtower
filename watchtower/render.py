@@ -80,7 +80,7 @@ def fit(text: str, limit: int) -> str:
     return "".join(pieces) + "…"
 
 
-def draft(d: Draft, version: Version, error: str = "") -> str:
+def draft(d: Draft, version: Version, error: str = "", lead: str = "") -> str:
     """A draft up for approval. The text is shown in full -- it is exactly what gets
     posted -- so callers keep it within ``drafts.MAX_SHOWN``."""
 
@@ -89,6 +89,8 @@ def draft(d: Draft, version: Version, error: str = "") -> str:
     if version.author == "user":
         head += f" · v{version.number}, your edit"
     lines = [head, fit(d.title, 200)]
+    if lead:
+        lines.append(f"<b>{fit(lead, 300)}</b>")
     if error:
         lines.append(f"⚠️ {fit(error, 300)}")
     if d.attachments:

@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Watchtower</title>
+  <link rel="stylesheet" href="/style.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <a class="skip" href="#view">Skip to content</a>
+  <header class="top">
+    <a class="brand" href="#/">Watchtower</a>
+    <nav aria-label="Sections">
+      <a href="#/" data-route="now">Now</a>
+      <a href="#/history" data-route="history">History</a>
+      <a href="#/drafts" data-route="drafts">Drafts</a>
+      <a href="#/calls" data-route="calls">Model calls</a>
+      <a href="#/knowledge" data-route="knowledge">Knowledge</a>
+      <a href="#/how" data-route="how">How it works</a>
+    </nav>
+    <p class="pulse" id="pulse" aria-live="polite">Connecting…</p>
+  </header>
+  <main id="view" tabindex="-1"></main>
+  <aside class="drawer" id="drawer" aria-hidden="true">
+    <button class="drawer-close" id="drawer-close" type="button">Close</button>
+    <div id="drawer-body"></div>
+  </aside>
+  <div class="tip" id="tip" role="tooltip" hidden></div>
+</body>
+</html>

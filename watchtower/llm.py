@@ -11,7 +11,9 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -94,14 +96,29 @@ def parse(content: str) -> Summary | None:
     return Summary(kind, text, data.get("needs_reply") is True)
 
 
+# Called with every chat call: (payload, answer or None, started, seconds, error).
+# The worker sets it to its ``trace.Trace.record``.
+tracer: Callable[[dict, dict | None, float, float, str], None] | None = None
+
+
 def _post(cfg: Config, path: str, payload: dict[str, Any], timeout: float) -> dict:
     request = urllib.request.Request(
         f"{cfg.llm_url}{path}",
         data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return json.load(response)
+    started, clock = time.time(), time.monotonic()
+    answer, error = None, ""
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            answer = json.load(response)
+        return answer
+    except Exception as err:
+        error = f"{type(err).__name__}: {err}"
+        raise
+    finally:
+        if tracer is not None and path == "/api/chat":
+            tracer(payload, answer, started, time.monotonic() - clock, error)
 
 
 def chat(

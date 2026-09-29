@@ -26,6 +26,15 @@ reviews = 0                       # pull requests and their comments
 replies = 0                       # discussions
 system = 0                        # startup, errors, /status
 
+[web]
+# The web UI: how Watchtower works, what it's doing, everything it did. On the LAN
+# without a login; it can edit and reject drafts, but posting still needs your
+# tap in Telegram. compose.yaml publishes it on the box's port 8780.
+port = 8080                       # inside the container
+# Names you open it by (IP addresses always work). Others are refused, so a
+# website can't reach it through a name it points at this box.
+hosts = ["watchtower.home.arpa"]
+
 [llm]
 # Both models must appear in `docker exec ollama ollama list`; "" turns that job off.
 # Local models only (no *-cloud: prompts would leave the box).

@@ -1,4 +1,4 @@
-# Watchtower: watcher, gateway, worker, poster. Deploy as a Portainer stack or with
+# Watchtower: watcher, gateway, worker, poster, web. Deploy as a Portainer stack or with
 # `docker compose up -d`. Host prerequisites are in README.md.
 # The image is built by .github/workflows/image.yml; nothing is built on the host.
 # Each service holds only its own secret. All model work is the worker's: it holds
@@ -65,6 +65,16 @@ services:
       interval: 60s
       start_period: 30s
 
+  web:
+    <<: *service
+    command: [web]
+    networks: [web]           # LAN only for the page; holds no secret
+    ports: ["8780:8080"]      # http://<box>:8780; the right side is [web] port
+    healthcheck:
+      test: [CMD, python, -m, watchtower, health, web, "120"]
+      interval: 60s
+      start_period: 30s
+
 secrets:
   github_read:
     file: /opt/watchtower/secrets/github_read
@@ -75,6 +85,7 @@ secrets:
 
 networks:
   egress: {}
+  web: {}
   llm:
     name: watchtower-llm
     external: true

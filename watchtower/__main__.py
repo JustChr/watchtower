@@ -1,4 +1,4 @@
-"""Entry point: ``python -m watchtower watcher|gateway|worker|poster``, or
+"""Entry point: ``python -m watchtower watcher|gateway|worker|poster|web``, or
 ``health <name> <max-age-seconds>``, or ``history ...``, or ``eval ...``."""
 
 from __future__ import annotations
@@ -136,6 +136,10 @@ def main(argv: list[str]) -> int:
             from . import worker
 
             worker.run(config.load())
+        case ["web"]:
+            from . import web
+
+            web.run(config.load())
         case ["poster"]:
             from . import poster
 

@@ -35,6 +35,8 @@ class Config:
     brief_betas: bool
     draft_replies: bool
     app_id: str  # the GitHub App that posts approved replies; "" = posting off
+    web_port: int = 8080
+    web_hosts: tuple[str, ...] = ()  # host names the web UI answers to, besides IPs
 
     @property
     def drafts(self) -> bool:
@@ -54,6 +56,7 @@ def parse(text: str) -> Config:
     github = raw.get("github", {})
     telegram = raw.get("telegram", {})
     llm = raw.get("llm", {})
+    web = raw.get("web", {})
 
     repos = tuple(github.get("repos", ()))
     if not repos or any(repo.count("/") != 1 for repo in repos):
@@ -103,6 +106,8 @@ def parse(text: str) -> Config:
         brief_betas=bool(llm.get("brief_betas", True)),
         draft_replies=bool(llm.get("draft_replies", True)),
         app_id=app_id,
+        web_port=int(web.get("port", 8080)),
+        web_hosts=tuple(str(h).strip().lower() for h in web.get("hosts", ())),
     )
 
 
