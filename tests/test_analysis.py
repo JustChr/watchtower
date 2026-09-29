@@ -207,6 +207,25 @@ def test_the_verdict_is_parsed_strictly_and_capped():
     assert analysis.parse_verdict("nope", sources) is None
 
 
+def test_asks_are_checked_against_the_message_being_answered():
+    content = json.dumps(
+        {
+            **verdict(category="contribution"),
+            "asks": ["A  or B?", "Shall I?", 3, "", *["A or B?"] * 9],
+            "decision": "A or B, see https://evil.io",
+        }
+    )
+    v = analysis.parse_verdict(content, {"thread": "Shall I? ... A or B?"}, "Two shapes. A or B?")
+    assert v.asks[:2] == (analysis.Ask("A or B?", True), analysis.Ask("Shall I?", False))
+    assert len(v.asks) == analysis.MAX_ITEMS and v.unfound_asks == [v.asks[1]]
+    assert v.decision == "A or B, see [link]"
+    assert analysis.Verdict.from_json(v.to_json()) == v
+    # Rows stored before asks existed still load.
+    old = json.loads(v.to_json())
+    del old["asks"], old["decision"]
+    assert analysis.Verdict.from_json(json.dumps(old)).asks == ()
+
+
 def test_a_quote_is_located_ignoring_case_and_whitespace():
     sources = {"thread": "Stream Login\n  FAILED", "#3": "fixed in v2"}
     assert analysis.locate("stream login failed", "thread", sources) == "thread"
@@ -232,11 +251,15 @@ def test_the_rendered_assessment_always_fits_a_message():
         fix="f" * 800,
         looked_at=("searched the code for «<b>»",) * 60,
         unknown_paths=("x" * 300 + ".py",) * 5,
+        asks=tuple(analysis.Ask("<a>" * 50, i % 2 == 0) for i in range(5)),
+        decision="<d>" * 100,
     )
     text = render.verdict(draft, huge)
     assert len(text) < 4096 and "<q>" not in text and "&lt;q&gt;" in text
     assert "<b>»" not in text and "🔎 <i>60 lookups: " in text and "No such file" in text
     assert "⚠️ not found in" in text and "✓" in text
+    assert "<b>Asked</b>\n• «&lt;a&gt;" in text and "⚠️ not in the message: «" in text
+    assert "⚖️ <b>Yours to decide</b>: &lt;d&gt;" in text and "<a>" not in text
 
 
 # -- replaying closed issues --------------------------------------------------------------
@@ -262,6 +285,38 @@ def test_replay_cases_stop_before_the_first_maintainer_answer(hist):
     assert (case.thread["state"], case.thread["labels"]) == ("open", "")  # no outcome leaks
     assert case.newest_url.endswith("#issuecomment-1")
     assert evaluate.cases(hist, REPO, [8, 9, 10, 99]) == []
+
+
+def test_replay_can_cut_at_a_given_comment(agent_cfg, hist, tmp_path, model):
+    put_issue(hist, 7)  # still open
+    put_comment(hist, 1, 7, "Convention?", association="OWNER", created="2026-09-02T00:00:00Z")
+    put_comment(hist, 2, 7, "A or B?", created="2026-09-03T00:00:00Z")
+    put_comment(hist, 3, 7, "Let's do A.", created="2026-09-04T00:00:00Z")  # the bot's
+    put_comment(hist, 4, 7, "B, please.", association="OWNER", created="2026-09-05T00:00:00Z")
+
+    (case,) = evaluate.cases(hist, REPO, [(7, 2)])
+    assert [c["body"] for c in case.thread["comments"]] == ["Convention?", "A or B?"]
+    assert case.newest_url.endswith("#issuecomment-2") and case.cutoff == "2026-09-03T00:00:01Z"
+    assert (case.answer, case.answer_label) == ("B, please.", "Your next answer")
+    # No maintainer answer yet: what came next is someone else's.
+    put_issue(hist, 8)
+    put_comment(hist, 81, 8, "A or B?", created="2026-09-03T00:00:00Z")
+    put_comment(hist, 82, 8, "Let's do A.", created="2026-09-04T00:00:00Z")
+    model.verdicts = [verdict(asks=["A or B?", "Or C?"], decision="A or B")]
+    (case,) = evaluate.cases(hist, REPO, [(8, 1)])
+    assert (case.answer, case.answer_label) == ("Let's do A.", "What came next, by stranger")
+    # No such comment, or a maintainer's: nothing to replay.
+    assert evaluate.cases(hist, REPO, [(7, 1), (7, 9), (99, 1)]) == []
+
+    out = tmp_path / "r.md"
+    evaluate.run(agent_cfg, hist, REPO, tmp_path, tmp_path / "f", out, [(8, 1)], say=print)
+    assert "**What came next, by stranger** (still open):\n\n> Let's do A." in out.read_text(
+        encoding="utf-8"
+    )
+    report = out.read_text(encoding="utf-8")
+    assert "- Asked: «A or B?»\n- Asked: «Or C?» ✗ not found\n- Yours to decide: A or B" in report
+    assert "NEWEST: answer this\nA or B?" in model.prompts("assess")[0][1]
+    assert "Let's do A." not in model.prompts("assess")[0][1]
 
 
 def test_replay_hides_what_came_later(agent_cfg, hist, tmp_path, model):
@@ -327,8 +382,23 @@ def test_replay_reports_a_failed_draft(agent_cfg, hist, tmp_path, model):
 
 
 @pytest.mark.parametrize(
-    "argv", [[], ["norepo"], ["o/r", "x"], ["o/r", "--limit"], ["o/r", "--limit", "a"]]
+    "argv",
+    [[], ["norepo"], ["o/r", "x"], ["o/r", "--limit"], ["o/r", "--limit", "a"], ["o/r", "1@"]],
 )
 def test_eval_command_checks_its_arguments(argv, capsys):
     assert cli.evaluate(argv) == 2
     assert "eval <owner/name>" in capsys.readouterr().err
+
+
+def test_eval_command_takes_cuts_at_a_comment(cfg, tmp_path, monkeypatch):
+    from watchtower import config
+    from watchtower import github as gh
+
+    seen = {}
+    monkeypatch.setattr(config, "load", lambda: dataclasses.replace(cfg, agent_model="m"))
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(config, "read_secret", lambda name: "t")
+    monkeypatch.setattr(gh, "GitHub", lambda token: None)
+    monkeypatch.setattr(evaluate, "run", lambda *a, **k: seen.update(numbers=a[6]))
+    assert cli.evaluate(["o/r", "160@5", "7"]) == 0
+    assert seen["numbers"] == [(160, 5), 7]

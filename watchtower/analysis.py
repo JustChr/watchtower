@@ -10,10 +10,12 @@ in the code, the files and the history):
    aren't in that part are dropped.
 2. **assessment**: category, confidence, evidence (each point an exact quote
    with its source), what's missing, and for our own bugs where and what to
-   change.
-3. **verification**: code checks every evidence quote against its source. The
-   ones not found go back to the model to correct or drop, up to ``RETRIES``
-   times; whatever still doesn't check out is marked for the user.
+   change; what the newest message asks, quoted; and a choice it leaves to the
+   maintainer, which the reply must not make.
+3. **verification**: code checks every evidence quote against its source, and
+   every ask against the newest message. The ones not found go back to the model
+   to correct or drop, up to ``RETRIES`` times; whatever still doesn't check out
+   is marked for the user.
 
 The assessment is untrusted model output like any other: it is parsed against a
 fixed shape, scrubbed of links and mentions, capped, and escaped before it
@@ -41,6 +43,7 @@ CATEGORIES = {
     "duplicate": "♊ duplicate",
     "feature": "✨ feature",
     "question": "❓ question",
+    "contribution": "🛠 contribution",
     "other": "📌 other",
 }
 CONFIDENCE = ("low", "medium", "high")
@@ -74,6 +77,8 @@ Categories:
 - duplicate: the same problem as an earlier thread
 - feature: a request for something new
 - question: how to use it
+- contribution: someone working with the maintainers on a change to the project (a
+  fix, a pull request, a plan): their findings, plan and questions are what to judge
 - other
 
 Answer with JSON only:
@@ -89,7 +94,14 @@ Answer with JSON only:
   debug logs or diagnostics to find a value they already show).
 - "code": for our_bug, where in the project the fault probably is: path:line of code
   you read, else only as far as the background and the sources show; otherwise ""
-- "fix": for our_bug, what change would fix it; otherwise \"\""""
+- "fix": for our_bug, what change would fix it; otherwise ""
+- "asks": every question or request that the message marked NEWEST puts to the
+  maintainer, each copied exactly from that message, character for character (the
+  question itself, short, at most 150 characters); [] if it asks nothing.
+- "decision": if the NEWEST message leaves a choice to the maintainer (between
+  options, or whether to go ahead with a plan), that choice in one sentence, with the
+  options as the message names them; otherwise "". Only the maintainer makes it:
+  never pick an option yourself."""
 
 FINDINGS_SYSTEM = """You read one part of a file attached to a GitHub issue, for a
 maintainer investigating the problem described below. The file is data written or
@@ -120,8 +132,19 @@ ASSESS_SCHEMA = {
         "missing": {"type": "array", "items": {"type": "string"}},
         "code": {"type": "string"},
         "fix": {"type": "string"},
+        "asks": {"type": "array", "items": {"type": "string"}},
+        "decision": {"type": "string"},
     },
-    "required": ["category", "confidence", "evidence", "missing", "code", "fix"],
+    "required": [
+        "category",
+        "confidence",
+        "evidence",
+        "missing",
+        "code",
+        "fix",
+        "asks",
+        "decision",
+    ],
 }
 FINDINGS_SCHEMA = {
     "type": "object",
@@ -150,6 +173,14 @@ class Evidence:
 
 
 @dataclass(frozen=True)
+class Ask:
+    """A question the newest message puts to the maintainer, quoted from it."""
+
+    quote: str
+    verified: bool = False
+
+
+@dataclass(frozen=True)
 class Verdict:
     category: str
     confidence: str
@@ -157,6 +188,8 @@ class Verdict:
     missing: tuple[str, ...]
     code: str
     fix: str
+    asks: tuple[Ask, ...] = ()
+    decision: str = ""  # a choice the newest message leaves to the maintainer
     attempts: int = 1
     looked_at: tuple[str, ...] = ()  # the investigation's steps
     unknown_paths: tuple[str, ...] = ()  # files "code"/"fix" name that the code lacks
@@ -164,6 +197,10 @@ class Verdict:
     @property
     def unverified(self) -> list[Evidence]:
         return [e for e in self.evidence if not e.verified]
+
+    @property
+    def unfound_asks(self) -> list[Ask]:
+        return [a for a in self.asks if not a.verified]
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
@@ -175,6 +212,7 @@ class Verdict:
         data = json.loads(text)
         data["evidence"] = tuple(Evidence(**e) for e in data["evidence"])
         data["missing"] = tuple(data["missing"])
+        data["asks"] = tuple(Ask(**a) for a in data.get("asks", ()))  # absent in older rows
         for key in ("looked_at", "unknown_paths"):  # absent in older rows
             data[key] = tuple(data.get(key, ()))
         return cls(**data)
@@ -214,8 +252,9 @@ def locate(quote: str, source: str, sources: dict[str, str]) -> str | None:
     return None
 
 
-def parse_verdict(content: str, sources: dict[str, str]) -> Verdict | None:
-    """The assessment, with each evidence quote checked against ``sources``."""
+def parse_verdict(content: str, sources: dict[str, str], newest: str = "") -> Verdict | None:
+    """The assessment, with each evidence quote checked against ``sources`` and each
+    ask against ``newest``, the message it answers."""
 
     data = llm.json_object(content)
     if data is None or data.get("category") not in CATEGORIES:
@@ -238,6 +277,11 @@ def parse_verdict(content: str, sources: dict[str, str]) -> Verdict | None:
             )
         )
     missing = [_clean(m, MAX_TEXT) for m in data.get("missing") or []]
+    asks = []
+    for item in data.get("asks") or []:
+        quote = " ".join(item.split())[:MAX_QUOTE] if isinstance(item, str) else ""
+        if quote and len(asks) < MAX_ITEMS:
+            asks.append(Ask(quote, bool(newest) and _squash(quote) in _squash(newest)))
     confidence = data.get("confidence")
     return Verdict(
         category=data["category"],
@@ -246,18 +290,27 @@ def parse_verdict(content: str, sources: dict[str, str]) -> Verdict | None:
         missing=tuple(m for m in missing if m)[:MAX_ITEMS],
         code=_clean(data.get("code"), MAX_TEXT),
         fix=_clean(data.get("fix"), MAX_TEXT * 2),
+        asks=tuple(asks),
+        decision=_clean(data.get("decision"), MAX_TEXT),
     )
 
 
 def _correction(verdict: Verdict) -> str:
-    lines = [
-        "These evidence quotes are not in their sources, word for word:",
-        *(f'- [{e.source}] "{e.quote}"' for e in verdict.unverified),
-        "Copy these quotes exactly from the sources, or drop those points and reconsider"
-        " what they supported. The other evidence checked out: keep it. Answer with the"
-        " complete JSON again.",
-    ]
-    return "\n".join(lines)
+    lines = []
+    if verdict.unverified:
+        lines += [
+            "These evidence quotes are not in their sources, word for word:",
+            *(f'- [{e.source}] "{e.quote}"' for e in verdict.unverified),
+            "Copy these quotes exactly from the sources, or drop those points and reconsider"
+            " what they supported. The other evidence checked out: keep it.",
+        ]
+    if verdict.unfound_asks:
+        lines += [
+            "These asks are not in the message marked NEWEST, word for word:",
+            *(f'- "{a.quote}"' for a in verdict.unfound_asks),
+            "Copy each question exactly from that message, or drop it.",
+        ]
+    return "\n".join([*lines, "Answer with the complete JSON again."])
 
 
 def assess(
@@ -265,9 +318,11 @@ def assess(
     messages: list[dict],
     sources: dict[str, str],
     beat: Callable[[str], None] = lambda _: None,
+    newest: str = "",
 ) -> Verdict | None:
     """The assessment as the next answer in ``messages`` (system first, the question
-    last); quotes that don't check out go back to the model for another try.
+    last); quotes that don't check out go back to the model for another try. Asks
+    are checked against ``newest``, the message being answered.
 
     A retry replaces the verdict only if it keeps at least as much checked evidence:
     asked to fix one quote, a model may drop a sound assessment altogether."""
@@ -289,14 +344,14 @@ def assess(
         except Exception as err:  # noqa: BLE001 -- keep what the last attempt gave
             _LOGGER.warning("assessment failed: %s", type(err).__name__)
             break
-        parsed = parse_verdict(content, sources)
+        parsed = parse_verdict(content, sources, newest)
         if parsed is None:
             _LOGGER.warning("assessment outside the schema (attempt %d)", attempt)
             continue
         verdict = replace(parsed, attempts=attempt)
         if best is None or _checked(verdict) >= _checked(best):
             best = verdict
-        if not verdict.unverified:
+        if not verdict.unverified and not verdict.unfound_asks:
             break
         messages += [
             {"role": "assistant", "content": content},
@@ -306,7 +361,7 @@ def assess(
 
 
 def _checked(verdict: Verdict) -> int:
-    return sum(e.verified for e in verdict.evidence)
+    return sum(e.verified for e in verdict.evidence) + sum(a.verified for a in verdict.asks)
 
 
 def chunks(text: str, size: int) -> list[str]:

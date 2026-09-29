@@ -38,12 +38,16 @@ def work(
         store.beat("drafter", f"{label}: {step}")
 
     beat("starting")
-    result = drafts.generate(cfg, draft, history, root, folder, beat=beat)
+    why = ""
+    try:
+        result = drafts.generate(cfg, draft, history, root, folder, beat=beat)
+    except drafts.Unfit as err:
+        result, why = None, f": {err}"
     if result is None:
         store.fail_draft(draft.id)
         store.enqueue(
             draft.topic,
-            render.system(f"The draft reply to {label} failed."),
+            render.system(f"The draft reply to {label} failed{why}."),
             url=draft.url,
         )
         return

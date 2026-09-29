@@ -402,6 +402,24 @@ def test_long_threads_keep_the_opening_and_the_latest_comments(hist, monkeypatch
     assert "comment 3" not in text and "comment 4" in text and "comment 5" in text
 
 
+def test_the_message_to_answer_is_shown_whole_and_cuts_are_said(hist):
+    # #160 of a watched repo: the question came after the 2000th character of the
+    # newest comment, and the model answered the half it saw.
+    put_issue(hist, body="o" * (drafts.MAX_BODY + 50))
+    put_comment(hist, 1, 7, "m" * (drafts.MAX_COMMENT + 10), association="OWNER")
+    newest = "Two shapes. " + "x" * 3000 + " A or B?"
+    put_comment(hist, 2, 7, newest, created="2026-09-03T00:00:00Z")
+    thread = hist.thread(REPO, 7)
+    url = f"{ISSUE_URL}#issuecomment-2"
+    text = drafts.thread_text(thread, url)
+    assert f"NEWEST: answer this\n{newest}" in text
+    assert "o\n[… 50 more characters not shown]" in text
+    assert "m\n[… 10 more characters not shown]" in text
+    assert drafts.newest_text(thread, url) == newest
+    # The opening post, when it is the one to answer, is shown whole too.
+    assert "o" * (drafts.MAX_BODY + 50) in drafts.thread_text(thread, ISSUE_URL)
+
+
 def verdict(**changes) -> dict:
     return {
         "category": "needs_info",
@@ -942,6 +960,53 @@ def test_a_failed_draft_is_reported(agent_cfg, store, hist, tmp_path, monkeypatc
     assert [d.status for d in store.drafts("failed")] == ["failed"]
 
 
+def test_a_message_too_long_to_read_whole_is_not_drafted(agent_cfg, store, hist, tmp_path, model):
+    put_issue(hist, body="x" * (drafts.MAX_NEWEST + 1))
+    add_draft(store)
+    drafter.work(store.claim_draft(), agent_cfg, store, hist, tmp_path)
+    assert model.calls == [] and model.acts == []
+    (message,) = store.pending()
+    assert f"failed: the message to answer has {drafts.MAX_NEWEST + 1} characters" in message.text
+    assert [d.status for d in store.drafts("failed")] == ["failed"]
+
+
+def test_what_is_asked_reaches_the_reply_and_a_decision_stays_open(
+    agent_cfg, store, hist, tmp_path, model
+):
+    put_issue(hist, body="Shall I do it? Report first.")
+    put_comment(hist, 2, 7, "I built it. Two shapes. A or B?", created="2026-09-03T00:00:00Z")
+    decision = "A (aware stamps) or B (naive plus a migration)."
+    # (Its full stop isn't doubled in the note.)
+    model.verdicts = [
+        # "Shall I do it?" is in the thread, but not in the message being answered.
+        verdict(category="contribution", asks=["A or B?", "Shall I do it?"], decision=decision),
+        verdict(category="contribution", asks=["a or  B?"], decision=decision),
+    ]
+    model.reply = {"reply": "Thanks! Let's go with A.", "note": "n"}
+    add_draft(store, url=f"{ISSUE_URL}#issuecomment-2")
+    draft = store.claim_draft()
+    result = drafts.generate(agent_cfg, draft, hist, tmp_path)
+
+    _, correction = (user for _, user in model.prompts("assess"))
+    assert "not in the message marked NEWEST" in correction and '"Shall I do it?"' in correction
+    assert "evidence quotes" not in correction  # there was no evidence to correct
+    assert result.verdict.category == "contribution"
+    assert [(a.quote, a.verified) for a in result.verdict.asks] == [("a or B?", True)]
+    assert result.verdict.decision == decision
+    ((system, user),) = model.prompts("reply")
+    assert "[YOUR DECISION:" in system and "address every one of them" in system
+    assert 'Asked [checked]: "a or B?"' in user
+    assert f"Decision for the maintainer (don't make it): {decision}" in user
+    # The reply took the decision: the note says so.
+    assert result.note == f"⚠️ Yours to decide: {decision[:-1]}. This reply may decide it for you. n"
+
+    model.calls.clear()
+    model.verdicts = [verdict(category="contribution", asks=["A or B?"], decision=decision)]
+    model.reply = {"reply": "Thanks!\n\n[YOUR DECISION: A or B]", "note": ""}
+    result = drafts.generate(agent_cfg, draft, hist, tmp_path)
+    assert result.note == f"⚖️ Yours to decide: {decision[:-1]}. Fill it in before posting."
+
+
 # -- Telegram: buttons, replies, markdown --------------------------------------------------
 
 
@@ -1052,6 +1117,26 @@ def test_post_sends_exactly_the_approved_version_once(cfg, store):
     posted, stale = store.pending()
     assert "Posted" in posted.text and posted.url.endswith("issuecomment-77")
     assert "already posted" in stale.text
+
+
+def test_a_draft_with_a_decision_left_open_is_not_posted(cfg, store):
+    draft, version = ready_draft(store, "Thanks!\n\n[Your decision: A or B]")
+    store.record_decision("draft", "post", version.id)
+    fake = FakePoster()
+    poster.apply_decisions(store, cfg, fake)
+
+    assert fake.posts == [] and store.draft(draft.id).status == "ready"
+    assert store.open_decisions("draft") == []
+    (message,) = store.pending()
+    assert "[YOUR DECISION: …] line" in message.text and "Reply to it" in message.text
+
+    # Filled in by an edit, it goes out.
+    store.record_decision("draft", "reply", draft.id, "Thanks! Let's do B.")
+    poster.apply_decisions(store, cfg, fake)
+    edit = store.latest_version(draft.id)
+    store.record_decision("draft", "post", edit.id)
+    poster.apply_decisions(store, cfg, fake)
+    assert fake.posts == [(7, "Thanks! Let's do B.")]
 
 
 def test_an_edit_becomes_the_version_to_approve(cfg, store):

@@ -19,9 +19,14 @@ What the model gets:
   according to the diagnostics and the form, and what was released since, with
   the maintainers' release notes (``versions``);
 - data: the thread as it is now (the watcher refreshed it before queueing the
-  draft), with the message to answer marked; the attached text files (whole if
-  they fit, else condensed part by part to checked findings); and similar
-  earlier threads with the maintainers' answers.
+  draft), with the message to answer marked and shown whole (other long messages
+  are cut, visibly); the attached text files (whole if they fit, else condensed
+  part by part to checked findings); and similar earlier threads with the
+  maintainers' answers.
+
+A choice the thread leaves to the maintainer (the assessment's ``decision``) is
+never made by the model: the reply leaves a ``[YOUR DECISION: ...]`` line, and the
+poster won't post a version that still has one.
 
 The reply is untrusted like any model output: it loses ``@mentions`` (they
 would notify people) and every link that doesn't point into the repo itself (an
@@ -52,6 +57,8 @@ MAX_SHOWN = 3500
 MAX_NOTE = 300
 MAX_BODY = 6000
 MAX_COMMENT = 2000
+# The message to answer is shown whole; one longer than this isn't drafted.
+MAX_NEWEST = 12000
 MAX_COMMENTS = 20
 SIMILAR = 4
 MAX_EXAMPLE = 1200
@@ -79,8 +86,19 @@ Build the reply on the assessment:
 - upstream: explain that it comes from the service or platform, and what the author
   can do meanwhile;
 - duplicate: point to the earlier thread by its number, like #12;
+- contribution: respond as a reviewer to their findings and plan: what the checked
+  evidence supports, what it doesn't, and what they asked;
 - feature, question, other: answer what was asked.
 If a newer release fixes it (see the release notes), say which one to update to.
+
+The assessment lists what the message asks ("Asked"): address every one of them, in
+order. One you can't answer from the assessment and the sources, say so; never skip
+it and never answer a different question instead.
+
+If the assessment names a decision for the maintainer ("Decision"), don't make it,
+not even implicitly by building on one option. Where the answer belongs, write a
+line of its own: [YOUR DECISION: the choice, in a few words]. The maintainer fills
+it in.
 
 The reply:
 - answers the message marked NEWEST, in the language it is written in;
@@ -224,6 +242,29 @@ def _clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
+def _cut(text: str, limit: int) -> str:
+    """``text`` shortened to ``limit``, saying how much is left out: the model must
+    know it didn't see all of it."""
+
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit].rstrip()}\n[… {len(text) - limit} more characters not shown]"
+
+
+DECISION_LINE = "[YOUR DECISION"
+
+
+def open_decision(text: str) -> bool:
+    """Whether a reply still has a decision left for the maintainer to fill in."""
+
+    return DECISION_LINE.lower() in text.lower()
+
+
+class Unfit(Exception):
+    """A thread this pipeline can't draft for; the message says why."""
+
+
 def clean_reply(text: str, repo: str) -> str:
     """The model's reply without @mentions, and without links outside ``repo``."""
 
@@ -260,19 +301,34 @@ def parse(content: str, repo: str) -> tuple[str, str] | None:
 # -- the thread and its neighbours ----------------------------------------------------
 
 
-def _entry(entry: dict, newest: bool) -> str:
+def _entry(entry: dict, newest: bool, limit: int) -> str:
     role = "maintainer" if entry["maintainer"] else "user"
-    mark = "  <<< NEWEST: answer this" if newest else ""
-    return f"--- {entry['author']} ({role}){mark}\n{_clip(entry['body'], MAX_COMMENT)}"
+    if newest:
+        return f"--- {entry['author']} ({role})  <<< NEWEST: answer this\n{entry['body'].strip()}"
+    return f"--- {entry['author']} ({role})\n{_cut(entry['body'], limit)}"
+
+
+def _marked(thread: dict, newest_url: str) -> tuple[list[dict], int]:
+    """The opening post and the comments, and which one is at ``newest_url`` (the
+    last one if it isn't there)."""
+
+    entries = [thread, *thread["comments"]]
+    marked = next((i for i, e in enumerate(entries) if e["url"] == newest_url), len(entries) - 1)
+    return entries, marked
+
+
+def newest_text(thread: dict, newest_url: str) -> str:
+    """The message to answer, whole."""
+
+    entries, marked = _marked(thread, newest_url)
+    return entries[marked]["body"]
 
 
 def thread_text(thread: dict, newest_url: str) -> str:
     """The thread, opening post first, with the message at ``newest_url`` marked
-    (the last one if it isn't there)."""
+    (the last one if it isn't there) and shown whole; the others are cut, visibly."""
 
-    opening = {**thread, "body": _clip(thread["body"], MAX_BODY)}
-    entries = [opening, *thread["comments"]]
-    marked = next((i for i, e in enumerate(entries) if e["url"] == newest_url), len(entries) - 1)
+    entries, marked = _marked(thread, newest_url)
     lines = [f"#{thread['number']} [{thread['kind']}, {thread['state']}] {thread['title']}"]
     if thread["labels"]:
         lines.append(f"Labels: {thread['labels']}")
@@ -282,7 +338,7 @@ def thread_text(thread: dict, newest_url: str) -> str:
         left_out = len(shown) - MAX_COMMENTS - 1
         shown = shown[:1] + shown[-MAX_COMMENTS:]
         lines.append(f"({left_out} earlier comments left out)")
-    lines += [_entry(entry, i == marked) for i, entry in shown]
+    lines += [_entry(entry, i == marked, MAX_BODY if i == 0 else MAX_COMMENT) for i, entry in shown]
     return "\n\n".join(lines)
 
 
@@ -377,6 +433,11 @@ def assessment_text(verdict: Verdict) -> str:
         lines.append(f"Where: {verdict.code}")
     if verdict.fix:
         lines.append(f"Fix: {verdict.fix}")
+    for a in verdict.asks:
+        state = "checked" if a.verified else "unverified"
+        lines.append(f'Asked [{state}]: "{a.quote}"')
+    if verdict.decision:
+        lines.append(f"Decision for the maintainer (don't make it): {verdict.decision}")
     return "\n".join(lines)
 
 
@@ -492,7 +553,7 @@ def generate(
     beat: Callable[[str], None] = _nothing,
 ) -> Result | None:
     """A draft for ``draft``: assessment, then reply. ``None`` if the thread is unknown
-    or the model failed.
+    or the model failed; ``Unfit`` if the message to answer is too long to read whole.
 
     ``root`` holds the code snapshots, ``folder`` the downloaded attachments. For
     replaying an old issue (``evaluate``), ``thread`` is the thread as it was and
@@ -502,6 +563,12 @@ def generate(
     thread = thread or history.thread(draft.repo, draft.number)
     if thread is None:
         return None
+    newest = newest_text(thread, draft.url)
+    if len(newest) > MAX_NEWEST:
+        raise Unfit(
+            f"the message to answer has {len(newest)} characters;"
+            f" drafts read at most {MAX_NEWEST} whole"
+        )
     copy = snapshot.path_for(root, draft.repo)
     known = background(
         brief.project_context(history, draft.repo, root),
@@ -561,7 +628,7 @@ def generate(
         **files.named(),
         **earlier_sources,
     }
-    verdict = analysis.assess(cfg, messages, sources, beat)
+    verdict = analysis.assess(cfg, messages, sources, beat, newest)
     if verdict is None:
         return None
     verdict = dataclasses.replace(
@@ -589,6 +656,11 @@ def generate(
         _LOGGER.warning("draft %s#%d unusable: outside the schema", draft.repo, draft.number)
         return None
     reply, note = parsed
+    decision = verdict.decision.rstrip(".")
+    if decision and not open_decision(reply):
+        note = f"⚠️ Yours to decide: {decision}. This reply may decide it for you. {note}"
+    elif decision:
+        note = f"⚖️ Yours to decide: {decision}. Fill it in before posting. {note}"
     # Only when it got none of the files: a file it got, or a log pasted into the
     # thread, is text it really read.
     if files.unread and not files.texts and claims_reading(reply):
@@ -596,7 +668,7 @@ def generate(
             "⚠️ Sounds as if it read an attached file it couldn't open:"
             f" check what it says about the file. {note}"
         ).strip()
-    return Result(reply, note, attachment_summary(files), verdict)
+    return Result(reply, _clip(note, MAX_NOTE), attachment_summary(files), verdict)
 
 
 def offer(store: Store, draft: Draft, version: Version, error: str = "") -> None:

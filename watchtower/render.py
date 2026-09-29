@@ -108,7 +108,7 @@ def verdict(d: Draft, v: Verdict) -> str:
     repo = d.repo.split("/", 1)[1]
     lines = [
         f"<b>🧭 Assessment #{d.number}</b> · {escape(repo)}",
-        fit(d.title, 200),
+        fit(d.title, 150),
         f"<b>{CATEGORIES[v.category]}</b> · confidence: {v.confidence}",
     ]
     if v.evidence:
@@ -116,19 +116,26 @@ def verdict(d: Draft, v: Verdict) -> str:
         for e in v.evidence:
             mark = "✓" if e.verified else "⚠️ not found in"
             lines.append(
-                f"• {mark} {fit(e.source, 60)}: «{fit(e.quote, 120)}»\n  {fit(e.point, 160)}"
+                f"• {mark} {fit(e.source, 60)}: «{fit(e.quote, 100)}»\n  {fit(e.point, 120)}"
             )
+    if v.asks:
+        lines.append("<b>Asked</b>")
+        for a in v.asks:
+            mark = "" if a.verified else "⚠️ not in the message: "
+            lines.append(f"• {mark}«{fit(a.quote, 100)}»")
+    if v.decision:
+        lines.append(f"⚖️ <b>Yours to decide</b>: {fit(v.decision, 200)}")
     if v.missing:
         lines.append("<b>Missing</b>")
-        lines += [f"• {fit(m, 160)}" for m in v.missing]
+        lines += [f"• {fit(m, 110)}" for m in v.missing]
     if v.code:
-        lines.append(f"<b>Where</b>: {fit(v.code, 300)}")
+        lines.append(f"<b>Where</b>: {fit(v.code, 200)}")
     if v.fix:
-        lines.append(f"<b>Fix</b>: {fit(v.fix, 500)}")
+        lines.append(f"<b>Fix</b>: {fit(v.fix, 350)}")
     if v.unknown_paths:
         lines.append(f"⚠️ No such file in the code: {fit(', '.join(v.unknown_paths), 120)}")
     if v.looked_at:
-        lines.append(f"🔎 <i>{len(v.looked_at)} lookups: {fit('; '.join(v.looked_at), 250)}</i>")
+        lines.append(f"🔎 <i>{len(v.looked_at)} lookups: {fit('; '.join(v.looked_at), 150)}</i>")
     return "\n".join(lines)
 
 

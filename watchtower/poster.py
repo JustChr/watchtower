@@ -4,7 +4,8 @@ that can write to GitHub. It never talks to the model.
 It applies the user's decisions on drafts, as the gateway recorded them:
 
 - ✅ Post on a version posts exactly that text, if it's still the draft's
-  latest version and the draft is still ready (not rejected, not superseded);
+  latest version and the draft is still ready (not rejected, not superseded),
+  and no ``[YOUR DECISION: ...]`` line is left in it;
 - 🗑 Reject rejects the draft;
 - a Telegram reply to a ready draft is an edit: it becomes a new version, shown
   with its own buttons; a reply to a rejected draft is the reason.
@@ -72,6 +73,14 @@ def post(store: Store, cfg: Config, poster: Poster, decision_id: int, version_id
         _stale(store, version_id)
         return
     draft, version = current
+    if drafts.open_decision(version.text):
+        store.mark_applied(decision_id)
+        text = (
+            f"#{draft.number}: the draft still has a [YOUR DECISION: …] line."
+            " Reply to it with your version, the decision filled in."
+        )
+        store.enqueue(draft.topic, render.system(text), url=draft.url)
+        return
     if not store.begin_post(draft.id, decision_id):
         return
     try:

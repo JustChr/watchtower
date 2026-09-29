@@ -63,12 +63,13 @@ def history(argv: list[str]) -> int:
     return 0
 
 
-EVAL_USAGE = "python -m watchtower eval <owner/name> [--limit N] [number ...]"
+EVAL_USAGE = "python -m watchtower eval <owner/name> [--limit N] [number[@comment] ...]"
+_CASE = re.compile(r"(\d+)(?:@(\d+))?")
 
 
 def evaluate(argv: list[str]) -> int:
     """Replay closed issues (``evaluate``); needs the model and the internet, so it
-    runs in the watcher container."""
+    runs in the watcher container. ``160@5`` replays #160 cut at its 5th comment."""
 
     from . import evaluate as replay
     from .github import GitHub
@@ -82,7 +83,7 @@ def evaluate(argv: list[str]) -> int:
             return 2
         limit = int(argv[at + 1])
         argv = argv[:at] + argv[at + 2 :]
-    if not argv or argv[0].count("/") != 1 or not all(a.isdigit() for a in argv[1:]):
+    if not argv or argv[0].count("/") != 1 or not all(_CASE.fullmatch(a) for a in argv[1:]):
         print(EVAL_USAGE, file=sys.stderr)
         return 2
     cfg = config.load()
@@ -98,11 +99,16 @@ def evaluate(argv: list[str]) -> int:
         config.DATA_DIR / "repos",
         config.DATA_DIR / "attachments",
         config.DATA_DIR / "eval" / f"{repo.split('/')[1]}-{stamp}.md",
-        [int(a) for a in argv[1:]],
+        [_case(a) for a in argv[1:]],
         limit,
         source=GitHub(config.read_secret("github_read")),
     )
     return 0
+
+
+def _case(arg: str) -> int | tuple[int, int]:
+    number, at = _CASE.fullmatch(arg).groups()
+    return (int(number), int(at)) if at else int(number)
 
 
 def main(argv: list[str]) -> int:

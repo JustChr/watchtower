@@ -9,12 +9,17 @@ next to what really happened: the maintainer's first answer and how the issue
 was closed. Judging that is the user's part; the report is the evidence, and a
 rerun after a change shows whether it helped.
 
+A case can also be cut at a given comment, open issues too (``160@5``: answer the
+5th comment, as it was then). The report then shows what came next: the
+maintainer's next answer, or else the next comment by anyone (a bad reply that
+got posted, kept as the example to beat).
+
 The code it may investigate is the author's version, or else the newest release
 at the cutoff -- never today's default branch, which would already hold the fix.
 
 It needs the model and the internet (attachments are downloaded without a token,
 the code with the read token), so it runs in the watcher container, from a shell:
-``python -m watchtower eval <owner/name> [--limit N] [number ...]``. The report,
+``python -m watchtower eval <owner/name> [--limit N] [number[@comment] ...]``. The report,
 ``/data/eval/<name>-<time>.md``, is rewritten after every issue.
 """
 
@@ -45,7 +50,8 @@ class Case:
     # (Not the answer's time: a maintainer often releases the fix, then answers.)
     cutoff: str
     answer: str  # the maintainer's first answer
-    outcome: str  # how the issue was closed
+    outcome: str  # how the issue was closed ("open" if it isn't)
+    answer_label: str = "Your first answer"
 
 
 @dataclass(frozen=True)
@@ -62,9 +68,46 @@ def _later(stamp: str) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(seconds))
 
 
-def cases(history: History, repo: str, numbers: Sequence[int] = ()) -> list[Case]:
+def case_at(history: History, repo: str, number: int, at: int) -> Case | None:
+    """``number`` cut just after its ``at``-th comment (from 1), which is to be
+    answered; ``None`` if there's no such comment or a maintainer wrote it."""
+
+    thread = history.thread(repo, number)
+    if thread is None or not 1 <= at <= len(thread["comments"]):
+        return None
+    newest = thread["comments"][at - 1]
+    if newest["maintainer"]:
+        return None
+    later = thread["comments"][at:]
+    answer = next((c for c in later if c["maintainer"]), later[0] if later else None)
+    if answer is None:
+        label = "Nothing came next"
+    elif answer["maintainer"]:
+        label = "Your next answer"
+    else:
+        label = f"What came next, by {answer['author']}"
+    return Case(
+        number=number,
+        title=thread["title"],
+        thread={**thread, "state": "open", "labels": "", "comments": thread["comments"][:at]},
+        newest_url=newest["url"],
+        cutoff=_later(newest["created"]),
+        answer=answer["body"] if answer else "",
+        outcome=thread["state"],
+        answer_label=label,
+    )
+
+
+def cases(history: History, repo: str, numbers: Sequence[int | tuple[int, int]] = ()) -> list[Case]:
+    """The cases to replay: ``numbers`` (``(number, comment)`` cuts at that comment),
+    else every closed issue."""
+
     found = []
     for number in numbers or history.closed(repo):
+        if isinstance(number, tuple):
+            case = case_at(history, repo, *number)
+            found += [case] if case else []
+            continue
         thread = history.thread(repo, number)
         if thread is None or thread["maintainer"]:
             continue  # unknown, or opened by a maintainer: nothing to triage
@@ -100,7 +143,8 @@ def report(repo: str, cfg: Config, outcomes: Sequence[Outcome], started: str) ->
     lines = [
         f"# Replay of {repo}, {started}",
         "",
-        f"{len(outcomes)} closed issue(s), each cut just before the maintainer's first answer."
+        f"{len(outcomes)} issue(s), each cut just before the maintainer's first answer"
+        " (or at the comment given)."
         f" Model {cfg.agent_model}, context {cfg.agent_num_ctx} tokens.",
         "",
         "| # | Model says | Confidence | Evidence checked | Steps | Closed as | Minutes |",
@@ -129,6 +173,10 @@ def report(repo: str, cfg: Config, outcomes: Sequence[Outcome], started: str) ->
                 mark = "✓" if e.verified else "✗ not found"
                 lines.append(f"- {mark} [{e.source}] «{e.quote}»: {e.point}")
             lines += [f"- Missing: {m}" for m in v.missing]
+            for a in v.asks:
+                lines.append(f"- Asked: «{a.quote}»" + ("" if a.verified else " ✗ not found"))
+            if v.decision:
+                lines.append(f"- Yours to decide: {v.decision}")
             if v.code:
                 lines.append(f"- Where: {v.code}")
             if v.fix:
@@ -140,12 +188,8 @@ def report(repo: str, cfg: Config, outcomes: Sequence[Outcome], started: str) ->
             if o.result.note:
                 lines.append(f"- Note: {o.result.note}")
             lines += ["", "**Model's reply:**", "", _quote(o.result.reply)]
-        lines += [
-            "",
-            f"**Your first answer** (closed as {o.case.outcome}):",
-            "",
-            _quote(o.case.answer),
-        ]
+        state = "still open" if o.case.outcome == "open" else f"closed as {o.case.outcome}"
+        lines += ["", f"**{o.case.answer_label}** ({state}):", "", _quote(o.case.answer)]
     return "\n".join(lines) + "\n"
 
 
@@ -156,7 +200,7 @@ def run(
     root: Path,
     folder: Path,
     out: Path,
-    numbers: Sequence[int] = (),
+    numbers: Sequence[int | tuple[int, int]] = (),
     limit: int | None = None,
     say: Callable[[str], None] = print,
     source: snapshot.Source | None = None,
@@ -196,16 +240,20 @@ def run(
             verdict="",
         )
         clock = time.monotonic()
-        result = drafts.generate(
-            cfg,
-            draft,
-            history,
-            root,
-            folder,
-            thread=case.thread,
-            as_of=case.cutoff,
-            beat=lambda step, n=case.number: say(f"#{n}: {step}"),
-        )
+        try:
+            result = drafts.generate(
+                cfg,
+                draft,
+                history,
+                root,
+                folder,
+                thread=case.thread,
+                as_of=case.cutoff,
+                beat=lambda step, n=case.number: say(f"#{n}: {step}"),
+            )
+        except drafts.Unfit as err:
+            say(f"#{case.number}: not drafted, {err}")
+            result = None
         outcomes.append(Outcome(case, result, time.monotonic() - clock))
         out.write_text(report(repo, cfg, outcomes, started), encoding="utf-8")
         verdict = result.verdict.category if result else "failed"
