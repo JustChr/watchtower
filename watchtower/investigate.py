@@ -610,6 +610,7 @@ def run(
                 tools,
                 num_ctx=cfg.agent_num_ctx,
                 timeout=cfg.agent_timeout,
+                think=cfg.agent_think,
             )
         except Exception as err:  # noqa: BLE001 -- assess with what was found so far
             _LOGGER.warning("investigation step %d failed: %s", step, type(err).__name__)

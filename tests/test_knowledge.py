@@ -263,6 +263,7 @@ def test_generate_prompts_with_docs_files_and_releases(agent_cfg, tmp_path, monk
     text = brief.generate(agent_cfg, REPO, tmp_path, beta, [beta, stable])
     assert text == "Purpose\nReads car data."
     assert seen["model"] == "big:120b" and seen["num_ctx"] == agent_cfg.agent_num_ctx
+    assert seen["think"] == "high"
     for part in ("src/app.py", "===== README.md =====", "New: trips", "- v1.0.0 (stable)"):
         assert part in seen["user"]
     assert "describes release v1.1.0b1 (beta)" in seen["user"]

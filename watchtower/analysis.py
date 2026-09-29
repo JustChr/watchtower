@@ -56,8 +56,10 @@ RETRIES = 2
 # diagnostics JSON and thread text: ~3.9 (70k characters = 17.6k tokens); a margin
 # below that, as JSON and logs run denser than prose.
 CHARS_PER_TOKEN = 3.5
-# Tokens kept free for the model's answer (and its thinking).
+# Tokens kept free for the model's answer (and its thinking at the default effort).
 ANSWER_TOKENS = 6000
+# More room for thinking at a higher reasoning effort (``llm.agent_think``).
+THINK_TOKENS = {"high": 10000}
 
 ASSESS_SYSTEM = """You assess GitHub issues and discussions for the maintainer of an
 open-source project, before anyone answers them. Work like a careful investigator:
@@ -225,7 +227,8 @@ class Verdict:
 def capacity(cfg: Config) -> int:
     """Characters a prompt to the agent model may have, leaving room for the answer."""
 
-    return int((cfg.agent_num_ctx - ANSWER_TOKENS) * CHARS_PER_TOKEN)
+    reserved = ANSWER_TOKENS + THINK_TOKENS.get(cfg.agent_think, 0)
+    return int((cfg.agent_num_ctx - reserved) * CHARS_PER_TOKEN)
 
 
 def _clean(text: object, limit: int) -> str:
@@ -344,6 +347,7 @@ def assess(
                 messages,
                 num_ctx=cfg.agent_num_ctx,
                 timeout=cfg.agent_timeout,
+                think=cfg.agent_think,
                 schema=ASSESS_SCHEMA,
             )
         except Exception as err:  # noqa: BLE001 -- keep what the last attempt gave
@@ -407,6 +411,7 @@ def findings(
                 user,
                 num_ctx=cfg.agent_num_ctx,
                 timeout=cfg.agent_timeout,
+                think=cfg.agent_think,
                 schema=FINDINGS_SCHEMA,
             )
         except Exception as err:  # noqa: BLE001 -- a part that fails is skipped

@@ -12,6 +12,7 @@ SECRETS_DIR = Path(os.environ.get("WATCHTOWER_SECRETS", "/run/secrets"))
 DATA_DIR = Path(os.environ.get("WATCHTOWER_DATA", "/data"))
 
 TOPICS = ("triage", "reviews", "replies", "system")
+THINK_LEVELS = frozenset({"", "low", "medium", "high"})  # Ollama's reasoning efforts
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,7 @@ class Config:
     agent_model: str
     agent_num_ctx: int
     agent_timeout: float
+    agent_think: str  # reasoning effort for agent work: low/medium/high; "" = the model's default
     agent_steps: int  # rounds of tool calls before an assessment; 0 = no tools
     brief_betas: bool
     draft_replies: bool
@@ -68,6 +70,10 @@ def parse(text: str) -> Config:
         if name and is_cloud_model(name):
             raise ValueError(f"llm.{key} {name!r} is a cloud model; use a local one")
 
+    agent_think = str(llm.get("agent_think", "high")).strip().lower()
+    if agent_think not in THINK_LEVELS:
+        raise ValueError(f"llm.agent_think must be one of {sorted(THINK_LEVELS)}")
+
     if "chat_id" not in telegram or "allowed_user_id" not in telegram:
         raise ValueError("telegram.chat_id and telegram.allowed_user_id are required")
 
@@ -102,6 +108,7 @@ def parse(text: str) -> Config:
         agent_model=agent_model,
         agent_num_ctx=int(llm.get("agent_num_ctx", 32768)),
         agent_timeout=float(llm.get("agent_timeout_seconds", 900)),
+        agent_think=agent_think,
         agent_steps=max(0, int(llm.get("agent_steps", 20))),
         brief_betas=bool(llm.get("brief_betas", True)),
         draft_replies=bool(llm.get("draft_replies", True)),

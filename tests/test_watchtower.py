@@ -79,6 +79,58 @@ def test_the_example_config_parses():
     assert example.agent_model and example.summary_model
 
 
+def test_agent_reasoning_defaults_to_high_and_rejects_unknown_levels(cfg):
+    assert cfg.agent_think == "high"
+    base = '[github]\nrepos=["a/b"]\n[telegram]\nchat_id=1\nallowed_user_id=2\n[llm]\n'
+    assert config.parse(base + 'agent_think = ""').agent_think == ""
+    assert config.parse(base + 'agent_think = "Low"').agent_think == "low"
+    with pytest.raises(ValueError, match="agent_think"):
+        config.parse(base + 'agent_think = "max"')
+
+
+def _capture_posts(monkeypatch) -> list[dict]:
+    payloads: list[dict] = []
+
+    def fake_post(cfg, path, payload, timeout):
+        payloads.append(payload)
+        return {"message": {"content": '{"kind": "question", "summary": "Asks about X."}'}}
+
+    monkeypatch.setattr(llm, "_post", fake_post)
+    return payloads
+
+
+def test_high_reasoning_leaves_more_room_for_thinking(cfg):
+    import dataclasses
+
+    from watchtower import analysis
+
+    default = dataclasses.replace(cfg, agent_num_ctx=65536, agent_think="")
+    high = dataclasses.replace(default, agent_think="high")
+    room = analysis.capacity(default) - analysis.capacity(high)
+    assert room == int(analysis.THINK_TOKENS["high"] * analysis.CHARS_PER_TOKEN)
+
+
+def test_reasoning_effort_is_sent_only_when_set(cfg, monkeypatch):
+    payloads = _capture_posts(monkeypatch)
+    llm.chat(cfg, "m", "sys", "hi", num_ctx=4096, timeout=5, think="high")
+    llm.act(cfg, "m", [], [], num_ctx=4096, timeout=5, think="high")
+    llm.chat(cfg, "m", "sys", "hi", num_ctx=4096, timeout=5)
+    assert [p.get("think") for p in payloads] == ["high", "high", None]
+
+
+def test_a_summary_by_the_agent_model_keeps_its_context_and_default_reasoning(cfg, monkeypatch):
+    import dataclasses
+
+    payloads = _capture_posts(monkeypatch)
+    item = {"title": "t", "body": "b"}
+    llm.summarize(cfg, item)
+    same = dataclasses.replace(cfg, summary_model="big:120b", agent_model="big:120b")
+    llm.summarize(same, item)
+    assert payloads[0]["options"]["num_ctx"] == cfg.num_ctx
+    assert payloads[1]["options"]["num_ctx"] == same.agent_num_ctx  # no reload between jobs
+    assert "think" not in payloads[1]
+
+
 def test_config_requires_telegram_ids():
     with pytest.raises(ValueError, match="allowed_user_id"):
         config.parse('[github]\nrepos=["a/b"]\n[telegram]\nchat_id=1')

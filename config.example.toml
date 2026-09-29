@@ -40,16 +40,21 @@ hosts = ["watchtower.home.arpa"]
 # Local models only (no *-cloud: prompts would leave the box).
 url = "http://ollama:11434"       # the ollama container, over the watchtower-llm network
 
-# Small and fast: one-line summaries of every new issue, PR, comment.
-summary_model = "qwen3-coder:30b" # MoE, 3B active, ~19 GB
-num_ctx = 16384
+# One-line summaries of every new issue, PR, comment. The agent model writes
+# them better than a small coder model, and summaries are short, so its speed
+# hardly matters. With the same model as agent_model, summaries use
+# agent_num_ctx (a different context makes Ollama reload the model each time).
+summary_model = "gpt-oss:120b"
+num_ctx = 16384                   # used only by a separate summary model
 timeout_seconds = 180
 
 # Big: writes the repo brief and the reply drafts (later: PR reviews). Reads up
 # to ~60k characters of docs + the file list, so it needs a large context.
-agent_model = "gpt-oss:120b"      # MoE, 5B active, ~65 GB; fits next to the summary model in 128 GB
-agent_num_ctx = 65536             # investigating needs room; fits next to the summary model
+agent_model = "gpt-oss:120b"      # MoE, 5B active, ~65 GB of the box's 128 GB
+agent_num_ctx = 131072            # gpt-oss's maximum; investigating needs room
 agent_timeout_seconds = 900
+agent_think = "high"              # reasoning effort: low / medium / high; "" = the model's default
+                                  # (low/medium/high is gpt-oss's; another model may refuse it)
 agent_steps = 20                  # before judging an issue: rounds of looking things up
                                   # (code at the author's version, attached files, history); 0 = off
 brief_betas = true                # a new beta release gets a new brief too; false = stable only

@@ -465,14 +465,14 @@ class FakeModel:
         self.acts: list[list[dict]] = []
         self.fail: str | None = None
 
-    def act(self, cfg, model, messages, tools, *, num_ctx, timeout):
+    def act(self, cfg, model, messages, tools, *, num_ctx, timeout, think=""):
         assert model == "big:120b" and num_ctx == cfg.agent_num_ctx
         self.acts.append([dict(m) for m in messages])
         if self.fail == "act":
             raise TimeoutError
         return self.turns.pop(0) if self.turns else {"content": "Nothing more to find."}
 
-    def __call__(self, cfg, model, messages, *, num_ctx, timeout, schema=None):
+    def __call__(self, cfg, model, messages, *, num_ctx, timeout, schema=None, think=""):
         assert model == "big:120b" and num_ctx == cfg.agent_num_ctx
         kind = {
             id(analysis.ASSESS_SCHEMA): "assess",

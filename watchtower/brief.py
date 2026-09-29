@@ -133,6 +133,7 @@ def generate(
             prompt(repo, docs, snapshot.tree(target), release, releases),
             num_ctx=cfg.agent_num_ctx,
             timeout=cfg.agent_timeout,
+            think=cfg.agent_think,
         )
     except Exception as err:  # noqa: BLE001 -- a failed brief is retried later
         _LOGGER.warning("brief %s failed: %s", repo, type(err).__name__)

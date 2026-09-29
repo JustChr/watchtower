@@ -130,11 +130,14 @@ def chat(
     num_ctx: int,
     timeout: float,
     schema: dict | None = None,
+    think: str = "",
 ) -> str:
     """One non-streaming chat turn; the raw (untrusted) answer text."""
 
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
-    return converse(cfg, model, messages, num_ctx=num_ctx, timeout=timeout, schema=schema)
+    return converse(
+        cfg, model, messages, num_ctx=num_ctx, timeout=timeout, schema=schema, think=think
+    )
 
 
 def converse(
@@ -145,8 +148,10 @@ def converse(
     num_ctx: int,
     timeout: float,
     schema: dict | None = None,
+    think: str = "",
 ) -> str:
-    """The next answer in a conversation (``role``/``content`` messages, system first)."""
+    """The next answer in a conversation (``role``/``content`` messages, system first).
+    ``think`` is the reasoning effort (``low``/``medium``/``high``); "" = the model's default."""
 
     payload: dict[str, Any] = {
         "model": model,
@@ -156,6 +161,8 @@ def converse(
     }
     if schema is not None:
         payload["format"] = schema
+    if think:
+        payload["think"] = think
     return _post(cfg, "/api/chat", payload, timeout)["message"]["content"]
 
 
@@ -167,6 +174,7 @@ def act(
     *,
     num_ctx: int,
     timeout: float,
+    think: str = "",
 ) -> dict:
     """The next turn of a conversation with tools: the raw (untrusted) message, with
     ``content`` and maybe ``thinking`` and ``tool_calls``."""
@@ -178,6 +186,8 @@ def act(
         "messages": messages,
         "tools": tools,
     }
+    if think:
+        payload["think"] = think
     message = _post(cfg, "/api/chat", payload, timeout).get("message")
     return message if isinstance(message, dict) else {}
 
@@ -191,13 +201,15 @@ def summarize(cfg: Config, item: dict[str, str], context: str = "") -> Summary |
     system = SYSTEM
     if context:
         system += f"\n\nAbout the project, from its maintainers (background only):\n{context}"
+    # One model for both jobs: keep the agent's context, or Ollama reloads it each switch.
+    same = cfg.summary_model == cfg.agent_model
     try:
         content = chat(
             cfg,
             cfg.summary_model,
             system,
             json.dumps(item, ensure_ascii=False),
-            num_ctx=cfg.num_ctx,
+            num_ctx=cfg.agent_num_ctx if same else cfg.num_ctx,
             timeout=cfg.llm_timeout,
             schema=SCHEMA,
         )

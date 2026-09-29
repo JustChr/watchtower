@@ -808,6 +808,7 @@ def generate(
             reply_prompt(checked, notes, verdict, shown),
             num_ctx=cfg.agent_num_ctx,
             timeout=cfg.agent_timeout,
+            think=cfg.agent_think,
             schema=SCHEMA,
         )
     except Exception as err:  # noqa: BLE001 -- a failed draft is reported, not retried
@@ -898,6 +899,7 @@ def revise(
             revise_prompt(text, instruction, verdict, shown),
             num_ctx=cfg.agent_num_ctx,
             timeout=cfg.agent_timeout,
+            think=cfg.agent_think,
             schema=SCHEMA,
         )
     except Exception as err:  # noqa: BLE001 -- reported to the user
