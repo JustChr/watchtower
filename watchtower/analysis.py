@@ -196,6 +196,7 @@ class Verdict:
     attempts: int = 1
     looked_at: tuple[str, ...] = ()  # the investigation's steps
     unknown_paths: tuple[str, ...] = ()  # files "code"/"fix" name that the code lacks
+    judged_at: str = ""  # the code it was judged against ("" = none), as ``code_copy`` says
 
     @property
     def unverified(self) -> list[Evidence]:

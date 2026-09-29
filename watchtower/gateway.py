@@ -28,6 +28,7 @@ BUTTON_ACTIONS = {
     "brief": {"approve": "Brief approved", "reject": "Brief discarded"},
     "draft": {
         "post": "Posting…",
+        "plain": "Posting, without the label…",
         "reject": "Rejected. Reply to the draft with a reason if you like.",
     },
 }

@@ -538,6 +538,7 @@ def test_a_draft_is_an_assessment_then_a_reply_built_on_it(agent_cfg, store, his
         "no file attached",
     )
     assert result.verdict.category == "duplicate"
+    assert result.verdict.judged_at == "the default branch as it is today"
     assert all(e.verified for e in result.verdict.evidence)  # whitespace and case don't count
 
     ((system, user),) = model.prompts("assess")
@@ -993,9 +994,11 @@ def test_drafter_offers_the_draft_with_buttons_and_takes_replies(
     worker.Worker(agent_cfg, store, hist, tmp_path).draft(store.claim_draft())
     assert steps == ["owner/repo#7: assessing"]
 
-    assessment, message = store.pending()
+    assessment, message, handed = store.pending()
     (draft,) = store.drafts("ready")
     assert analysis.Verdict.from_json(draft.verdict) == judged
+    # A bug, but only suspected (no file and line): handed off, no label.
+    assert "🐞 For Claude #7" in handed.text and "suspected, not confirmed" in handed.text
     assert assessment.silent and assessment.buttons == () and assessment.url == ISSUE_URL
     assert "🧭 Assessment #7" in assessment.text and "🐞 our bug" in assessment.text
     assert "✓ thread: «SoC &lt;stuck&gt;»" in assessment.text
@@ -1215,8 +1218,8 @@ def test_a_draft_with_a_decision_left_open_is_not_posted(cfg, store):
     (message,) = store.pending()
     assert "[YOUR DECISION: …] line" in message.text and "Reply to it" in message.text
 
-    # Filled in by an edit, it goes out.
-    store.record_decision("draft", "reply", draft.id, "Thanks! Let's do B.")
+    # Filled in by an edit (the user's own text), it goes out.
+    store.record_decision("draft", "reply", draft.id, "Text: Thanks! Let's do B.")
     poster.apply_decisions(store, cfg, fake)
     edit = store.latest_version(draft.id)
     store.record_decision("draft", "post", edit.id)
@@ -1226,7 +1229,7 @@ def test_a_draft_with_a_decision_left_open_is_not_posted(cfg, store):
 
 def test_an_edit_becomes_the_version_to_approve(cfg, store):
     draft, first = ready_draft(store, "Model text")
-    store.record_decision("draft", "reply", draft.id, "  My **own** text  ")
+    store.record_decision("draft", "reply", draft.id, "  text: My **own** text  ")
     poster.apply_decisions(store, cfg, FakePoster())
     edit = store.latest_version(draft.id)
     assert (edit.text, edit.author, edit.number) == ("My **own** text", "user", 2)
@@ -1246,7 +1249,7 @@ def test_an_edit_becomes_the_version_to_approve(cfg, store):
 
 def test_an_edit_too_long_to_show_is_refused(cfg, store):
     draft, _ = ready_draft(store)
-    store.record_decision("draft", "reply", draft.id, "x" * (drafts.MAX_SHOWN + 1))
+    store.record_decision("draft", "reply", draft.id, "text:" + "x" * (drafts.MAX_SHOWN + 1))
     poster.apply_decisions(store, cfg, FakePoster())
     assert store.latest_version(draft.id).number == 1
     assert "shorter" in store.pending()[-1].text

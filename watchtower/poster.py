@@ -5,12 +5,17 @@ It applies the user's decisions on drafts, as the gateway recorded them:
 
 - ✅ Post on a version posts exactly that text, if it's still the draft's
   latest version and the draft is still ready (not rejected, not superseded),
-  and no ``[YOUR DECISION: ...]`` line is left in it;
+  and no ``[YOUR DECISION: ...]`` line is left in it; for a confirmed bug in
+  an issue it also adds the label the message named (``handoff.label``), which
+  "✅ Post only" leaves out;
 - 🗑 Reject rejects the draft;
-- a Telegram reply to a ready draft is an edit: it becomes a new version, shown
-  with its own buttons; a reply to a rejected draft is the reason.
+- a Telegram reply to a ready draft is an instruction: the worker has the model
+  revise the latest version as it says (a ``revise`` job), and offers the result
+  with its own buttons; a reply starting with ``text:`` is the user's own text,
+  used as it is. A reply to a rejected draft is the reason.
 
-The web UI records the same edits and rejections (origin ``web``). It can't
+The web UI records the same instructions, edits (its editor: always the text
+as it is) and rejections (origin ``web``). It can't
 post: its "Post" only offers that version in Telegram again (``offer``), and a
 post decision from anywhere but Telegram is refused.
 
@@ -25,7 +30,7 @@ import logging
 import time
 from typing import Protocol
 
-from . import drafts, render
+from . import drafts, handoff, render
 from .config import DATA_DIR, Config, read_secret
 from .github import GitHubError
 from .store import Draft, Store, Version
@@ -38,12 +43,16 @@ WEB_OFFER = "🌐 Sent from the web UI: ✅ Post posts exactly this version."
 
 class Poster(Protocol):
     def post(self, draft: Draft, body: str) -> str: ...
+    def label(self, draft: Draft, name: str) -> None: ...
 
 
 class NoApp:
     """Stands in while ``github.app_id`` is unset: every post fails, visibly."""
 
     def post(self, draft: Draft, body: str) -> str:
+        raise GitHubError("no GitHub App configured (github.app_id)", definite=True)
+
+    def label(self, draft: Draft, name: str) -> None:
         raise GitHubError("no GitHub App configured (github.app_id)", definite=True)
 
 
@@ -71,7 +80,16 @@ def _stale(store: Store, version_id: int) -> None:
     store.enqueue(draft.topic, render.system(text))
 
 
-def post(store: Store, cfg: Config, poster: Poster, decision_id: int, version_id: int) -> None:
+def post(
+    store: Store,
+    cfg: Config,
+    poster: Poster,
+    decision_id: int,
+    version_id: int,
+    labelled: bool = True,
+) -> None:
+    """Post the version; ``labelled``: with the label its message offered, if any."""
+
     current = _current(store, version_id)
     if current is None or current[0].repo not in cfg.repos:
         store.mark_applied(decision_id)
@@ -86,7 +104,8 @@ def post(store: Store, cfg: Config, poster: Poster, decision_id: int, version_id
         store.mark_applied(decision_id)
         text = (
             f"#{draft.number}: the draft still has a [YOUR DECISION: …] line."
-            " Reply to it with your version, the decision filled in."
+            " Reply to it with your decision and the model fills it in, or with your own"
+            f" version starting with {drafts.OWN_TEXT}"
         )
         store.enqueue(draft.topic, render.system(text), url=draft.url)
         return
@@ -109,7 +128,16 @@ def post(store: Store, cfg: Config, poster: Poster, decision_id: int, version_id
             store.enqueue(draft.topic, render.system(text), url=draft.url)
         return
     store.posted(draft.id, url)
-    store.enqueue(draft.topic, render.posted(draft), url=url)
+    tag = handoff.label(draft) if labelled else ""
+    if tag:
+        try:
+            poster.label(draft, tag)
+        except Exception as err:  # noqa: BLE001 -- the reply is out; say what's missing
+            _LOGGER.warning("labelling draft %d failed: %s", draft.id, err)
+            text = f"#{draft.number}: the reply is posted, but adding the label {tag} failed: {err}"
+            store.enqueue(draft.topic, render.system(text), url=draft.url)
+            tag = ""
+    store.enqueue(draft.topic, render.posted(draft, tag), url=url)
     _LOGGER.info("posted draft %d: %s", draft.id, url)
 
 
@@ -133,13 +161,22 @@ def web_offer(store: Store, decision_id: int, version_id: int) -> None:
     store.mark_applied(decision_id)
 
 
-def reply(store: Store, decision_id: int, draft_id: int, text: str) -> None:
+def reply(store: Store, decision_id: int, draft_id: int, text: str, literal: bool = False) -> None:
+    """A reply to a draft: an instruction for the model, unless ``literal`` or it
+    starts with ``drafts.OWN_TEXT`` (then it's the new version as it is)."""
+
     draft = store.draft(draft_id)
     text = text.strip()
+    own = text if literal else drafts.own_text(text)
     if draft is None or not text:
         pass
+    elif draft.status == "ready" and own is None:
+        revise(store, draft, text)
     elif draft.status == "ready":
-        if len(text) > drafts.MAX_SHOWN:
+        text = own
+        if not text:
+            store.enqueue(draft.topic, render.system(f"#{draft.number}: no text after text:"))
+        elif len(text) > drafts.MAX_SHOWN:
             note = (
                 f"#{draft.number}: your version has {len(text)} characters; drafts can show"
                 f" {drafts.MAX_SHOWN} in full. Send a shorter one."
@@ -156,14 +193,37 @@ def reply(store: Store, decision_id: int, draft_id: int, text: str) -> None:
     store.mark_applied(decision_id)
 
 
+def revise(store: Store, draft: Draft, instruction: str) -> None:
+    """Queue the model's revision of the draft's latest version."""
+
+    if len(instruction) > drafts.MAX_INSTRUCTION:
+        text = (
+            f"#{draft.number}: instructions can have {drafts.MAX_INSTRUCTION} characters;"
+            f" to send your own version, start the reply with {drafts.OWN_TEXT}"
+        )
+        store.enqueue(draft.topic, render.system(text))
+        return
+    store.add_job(
+        "revise",
+        f"revise:{draft.id}:{time.time()}",
+        {"draft": draft.id, "instruction": instruction},
+    )
+    store.enqueue(draft.topic, render.system(f"#{draft.number}: revising it as you asked…"))
+
+
 def apply_decisions(store: Store, cfg: Config, poster: Poster) -> None:
     for decision_id, action, ref, text in store.open_decisions("draft"):
         match action:
             case "post":
                 post(store, cfg, poster, decision_id, ref)
+            case "plain":
+                post(store, cfg, poster, decision_id, ref, labelled=False)
             case "reject":
                 reject(store, decision_id, ref)
             case "reply":
+                web = store.decision_origin(decision_id) == "web"  # the web's editor
+                reply(store, decision_id, ref, text or "", literal=web)
+            case "revise":
                 reply(store, decision_id, ref, text or "")
             case "offer":
                 web_offer(store, decision_id, ref)

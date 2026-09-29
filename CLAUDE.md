@@ -32,6 +32,12 @@ end-to-end locally.
     Repo knowledge in drafts: the maintainer's notes (`docs/knowledge/*.md`
     in the watched repo, from the default branch) and the repo's docs (at
     the judged version), whole within `DOCS_SHARE`, the rest via `search_docs`.
+  - `handoff.py` — a bug (`our_bug`) is handed to the maintainer, not fixed:
+    code decides confirmed vs suspected (high confidence, all quotes checked,
+    an existing `file:line`, nothing missing), builds a prompt for Claude Code
+    (sent after the draft; copy button in the web UI) with the findings
+    framed as data; a confirmed issue gets the `bug` label on ✅ (the
+    "Post only" button leaves it off).
   - `poster.py` — the only GitHub writer: holds the App key (`github_app.py`),
     applies draft decisions, posts exactly the approved version; no model.
   - `web.py` — the web UI (stdlib `http.server`, JSON API) + `web/` (one
@@ -62,7 +68,9 @@ end-to-end locally.
   - `evaluate.py` — replays closed issues (`eval` CLI in the watcher: it
     prepares, the worker replays).
   - Buttons: the gateway records presses — and replies to messages whose
-    outbox `ref` is `draft:<id>` (edits, reject reasons) — as `decision` rows;
+    outbox `ref` is `draft:<id>` (instructions, own text after `text:`,
+    reject reasons) — as `decision` rows; an instruction becomes a `revise`
+    job: the worker has the model rework the latest version (`drafts.revise`);
     the watcher (briefs) or the poster (drafts) applies them. `callback_data`
     is `kind:action:id`.
   - `github.py`, `telegram.py`, `config.py`, `__main__.py`.

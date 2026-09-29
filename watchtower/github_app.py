@@ -2,7 +2,8 @@
 
 The key signs a JWT (RS256, valid ten minutes) that proves being the App; the
 JWT buys an installation token for one repo, valid an hour and limited to
-writing issues and discussions. Only the poster holds the key.
+writing issues and discussions (comments, and labels on issues). Only the
+poster holds the key.
 """
 
 from __future__ import annotations
@@ -126,3 +127,9 @@ class App:
             return data["addDiscussionComment"]["comment"]["url"]
         path = f"/repos/{draft.repo}/issues/{draft.number}/comments"
         return client.post_json(path, {"body": body})["html_url"]
+
+    def label(self, draft: Draft, name: str) -> None:
+        """Add the label ``name`` to the draft's issue (GitHub creates it if it's new)."""
+
+        client = self._connect(self.token(draft.repo))
+        client.post_json(f"/repos/{draft.repo}/issues/{draft.number}/labels", {"labels": [name]})

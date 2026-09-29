@@ -735,7 +735,39 @@ function assessment(v) {
     v.code ? [h("h3", {}, "Where"), h("p", {}, v.code)] : null,
     v.fix ? [h("h3", {}, "Fix"), h("p", {}, v.fix)] : null,
     v.unknown_paths.length ? h("p", { class: "warn" }, `No such file in the code: ${v.unknown_paths.join(", ")}`) : null,
+    v.judged_at ? h("p", { class: "small muted" }, `Judged against ${v.judged_at}.`) : null,
     v.looked_at.length ? [h("h3", {}, `Looked up (${v.looked_at.length})`), h("ol", {}, v.looked_at.map((step) => h("li", {}, step)))] : null,
+  );
+}
+
+// The page is served over plain http on the LAN, where the clipboard API may be
+// missing: then the text is selected for Ctrl+C.
+async function copyText(area) {
+  try {
+    await navigator.clipboard.writeText(area.value);
+    return "Copied.";
+  } catch {
+    area.focus();
+    area.select();
+    return document.execCommand("copy") ? "Copied." : "Selected: press Ctrl+C.";
+  }
+}
+
+function handoffBlock(x) {
+  const area = h("textarea", { readonly: "", rows: "16", spellcheck: "false" });
+  area.value = x.prompt;
+  const said = h("span", { class: "small muted", role: "status" });
+  const copy = h("button", { type: "button", class: "primary" }, "Copy prompt for Claude");
+  copy.addEventListener("click", async () => (said.textContent = await copyText(area)));
+  return h(
+    "div",
+    { class: "sheet" },
+    x.confirmed
+      ? h("p", {}, h("span", { class: "ok" }, "✓ Confirmed"), " by Watchtower's checks. Claude still double-checks it.")
+      : [h("p", {}, h("span", { class: "warn" }, "Suspected"), ", not confirmed. The checks it failed:"), h("ul", {}, x.doubts.map((t) => h("li", {}, t)))],
+    x.label ? h("p", { class: "small muted" }, `Posting the reply from Telegram also labels the issue "${x.label}" (unless you choose "Post only").`) : null,
+    area,
+    h("div", { class: "chips" }, copy, said),
   );
 }
 
@@ -757,7 +789,7 @@ function versionsBlock(d, rerender) {
     h(
       "div",
       {},
-      h("h3", {}, `Version ${i + 1}`, h("span", { class: "muted small" }, ` · ${v.author === "model" ? "by the model" : "your edit"}, ${dateTime(v.created)}`)),
+      h("h3", {}, `Version ${i + 1}`, h("span", { class: "muted small" }, ` · ${{ model: "by the model", revised: "revised as you asked", user: "your edit" }[v.author] || v.author}, ${dateTime(v.created)}`)),
       h("pre", { class: "text" }, v.text),
     ),
   );
@@ -768,6 +800,9 @@ function versionsBlock(d, rerender) {
   const save = h("button", { type: "button", class: "primary" }, "Send my version");
   save.addEventListener("click", () => run(save, `/api/drafts/${d.id}/edit`, { text: area.value }));
   editor.append(area, h("div", { class: "chips" }, save, h("button", { type: "button", onclick: () => (editor.hidden = true) }, "Cancel")));
+  const instruction = h("textarea", { class: "short", "aria-label": "What to change", rows: "3", maxlength: "2000", placeholder: "What to change, e.g. \"Go with option B, and ask for the log.\"" });
+  const revise = h("button", { type: "button", class: "primary" }, "Revise it");
+  revise.addEventListener("click", () => run(revise, `/api/drafts/${d.id}/revise`, { text: instruction.value }));
   const offer = h("button", { type: "button", class: "primary" }, "Post via Telegram");
   offer.addEventListener("click", () => run(offer, `/api/versions/${latest.id}/offer`));
   const reject = h("button", { type: "button" }, "Reject");
@@ -776,14 +811,17 @@ function versionsBlock(d, rerender) {
     "div",
     {},
     blocks,
+    h("h3", {}, "Tell the model what to change"),
+    instruction,
+    h("div", { class: "chips" }, revise),
     h(
       "div",
       { class: "chips" },
       offer,
-      h("button", { type: "button", onclick: () => ((editor.hidden = false), area.focus()) }, "Edit"),
+      h("button", { type: "button", onclick: () => ((editor.hidden = false), area.focus()) }, "Edit the text myself"),
       reject,
     ),
-    h("p", { class: "small muted" }, "Post via Telegram sends this version to your group again; it's posted only when you tap ✅ Post there. An edit comes back in Telegram as a new version."),
+    h("p", { class: "small muted" }, "Post via Telegram sends this version to your group again; it's posted only when you tap ✅ Post there. A revision or an edit comes back as a new version, here and in Telegram."),
     editor,
     notice,
   );
@@ -876,6 +914,7 @@ async function viewDraft(id) {
     passBar(d.calls),
     h("h2", {}, "The assessment"),
     assessment(d.verdict),
+    d.handoff ? [h("h2", {}, "For Claude"), h("p", { class: "muted small" }, "A bug is Watchtower's to report, not to fix: paste this into Claude Code in the project."), handoffBlock(d.handoff)] : null,
     d.stages.find((st) => st.name === "investigation")
       ? [
           h("h2", {}, "The investigation"),

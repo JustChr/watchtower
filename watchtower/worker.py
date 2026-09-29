@@ -93,6 +93,11 @@ class Worker:
 
         if self.summaries():
             return True
+        # A revision first: you asked for it and are waiting.
+        job = self.store.claim_job(("revise",)) if self.cfg.drafts else None
+        if job is not None:
+            self._run(job, self.revise)
+            return True
         draft = self.store.claim_draft() if self.cfg.drafts else None
         if draft is not None:
             try:
@@ -182,8 +187,49 @@ class Worker:
         version = store.finish_draft(
             draft.id, result.reply, result.note, result.attachments, result.verdict.to_json()
         )
-        drafts.offer(store, store.draft(draft.id), version)
+        ready = store.draft(draft.id)
+        drafts.offer(store, ready, version)
+        drafts.hand_off(store, ready)
         _LOGGER.info("draft %d ready for %s", draft.id, label)
+
+    def revise(self, job: Job) -> None:
+        """Revise a draft's latest version as the user's instruction says, and offer
+        it -- unless the draft moved on meanwhile (posted, rejected, a newer version)."""
+
+        store = self.store
+        draft = store.draft(job.payload["draft"])
+        instruction = job.payload["instruction"]
+        latest = store.latest_version(draft.id) if draft else None
+        if draft is None or draft.status != "ready" or latest is None:
+            if draft is not None:
+                text = f"#{draft.number}: not revised, the draft is {draft.status}."
+                store.enqueue(draft.topic, render.system(text))
+            store.finish_job(job.id)
+            return
+        self.busy = f"{draft.repo}#{draft.number}"
+        try:
+            with self.about(f"draft:{draft.id}"):
+                self.between("revising as you asked")
+                revised = drafts.revise(
+                    self.cfg, draft, latest.text, instruction, self.history, self.root
+                )
+        finally:
+            self.busy = ""
+        draft = store.draft(draft.id)
+        if revised is None:
+            text = (
+                f"#{draft.number}: the revision failed. Reply again, or send your own"
+                f" version by starting the reply with {drafts.OWN_TEXT}"
+            )
+            store.enqueue(draft.topic, render.system(text), done_job=job.id)
+        elif draft.status != "ready" or store.latest_version(draft.id).id != latest.id:
+            text = f"#{draft.number}: the draft changed while revising; the revision was dropped."
+            store.enqueue(draft.topic, render.system(text), done_job=job.id)
+        else:
+            reply, note = revised
+            version = store.add_version(draft.id, reply, "revised")
+            lead = f"✍️ Revised as you asked. {note}".strip()
+            drafts.offer(store, draft, version, lead=lead, done_job=job.id)
 
     # -- briefs -----------------------------------------------------------------
 

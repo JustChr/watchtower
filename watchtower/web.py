@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
-from . import drafts, render, snapshot
+from . import drafts, handoff, render, snapshot
 from .analysis import CATEGORIES, Verdict
 from .config import DATA_DIR, Config
 from .history import History
@@ -209,9 +209,11 @@ class Data:
         )
         for stage in stages:
             stage["data"] = json.loads(stage["data"])
+        found = self.store.draft(draft_id)
         return {
             **draft,
             "verdict": _verdict(verdict),
+            "handoff": _handoff(found, verdict),
             "versions": versions,
             "decisions": sorted(decisions, key=lambda d: d["id"]),
             "stages": stages,
@@ -273,6 +275,22 @@ class Data:
         self.store.record_decision("draft", "reply", draft_id, text, origin="web")
         return "Sent: it comes back in Telegram as a new version, with its own buttons."
 
+    def revise(self, draft_id: int, instruction: str) -> str:
+        """An instruction for the model: the worker revises the latest version."""
+
+        draft = self.store.draft(draft_id)
+        instruction = instruction.strip()
+        if draft is None:
+            raise ValueError("no such draft")
+        if not instruction:
+            raise ValueError("say what to change")
+        if len(instruction) > drafts.MAX_INSTRUCTION:
+            raise ValueError(f"at most {drafts.MAX_INSTRUCTION} characters")
+        if draft.status != "ready":
+            raise ValueError(f"the draft is {draft.status}")
+        self.store.record_decision("draft", "revise", draft_id, instruction, origin="web")
+        return "Sent: the model revises it, and it comes back here and in Telegram with its own buttons."
+
     def _version(self, version_id: int):
         version = self.store.version(version_id)
         if version is None:
@@ -288,6 +306,19 @@ class Data:
         self._version(version_id)
         self.store.record_decision("draft", "offer", version_id, origin="web")
         return "Sent to Telegram: tap ✅ Post there to post it."
+
+
+def _handoff(draft, verdict: Verdict | None) -> dict | None:
+    """A bug's prompt for Claude Code (``handoff``), and whether it's confirmed."""
+
+    if draft is None or not handoff.is_bug(verdict):
+        return None
+    return {
+        "confirmed": handoff.confirmed(verdict),
+        "doubts": handoff.doubts(verdict),
+        "label": handoff.label(draft),
+        "prompt": handoff.prompt(draft, verdict),
+    }
 
 
 def _verdict(verdict: Verdict | None) -> dict | None:
@@ -306,6 +337,7 @@ def _verdict(verdict: Verdict | None) -> dict | None:
         "attempts": verdict.attempts,
         "looked_at": list(verdict.looked_at),
         "unknown_paths": list(verdict.unknown_paths),
+        "judged_at": verdict.judged_at,
     }
 
 
@@ -345,6 +377,7 @@ GET_ROUTES = [
 ]
 POST_ROUTES = [
     (re.compile(r"/api/drafts/(\d+)/edit"), "edit"),
+    (re.compile(r"/api/drafts/(\d+)/revise"), "revise"),
     (re.compile(r"/api/versions/(\d+)/reject"), "reject"),
     (re.compile(r"/api/versions/(\d+)/offer"), "offer"),
 ]
@@ -383,9 +416,9 @@ def answer_post(data: Data, path: str, body: dict) -> tuple[int, Any]:
         if match is None:
             continue
         try:
-            if name == "edit":
+            if name in ("edit", "revise"):
                 text = body.get("text")
-                message = data.edit(int(match[1]), text if isinstance(text, str) else "")
+                message = getattr(data, name)(int(match[1]), text if isinstance(text, str) else "")
             else:
                 message = getattr(data, name)(int(match[1]))
         except ValueError as err:

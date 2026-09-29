@@ -10,6 +10,9 @@ from .events import Event
 from .llm import Summary
 from .store import Draft, Version
 
+# A reply to a draft starting with this is the user's own text (``drafts.own_text``).
+OWN_TEXT = "text:"
+
 HEADINGS = {
     "issue": "🆕 Issue",
     "pr": "🔀 Pull request",
@@ -80,14 +83,17 @@ def fit(text: str, limit: int) -> str:
     return "".join(pieces) + "…"
 
 
-def draft(d: Draft, version: Version, error: str = "", lead: str = "") -> str:
+def draft(d: Draft, version: Version, error: str = "", lead: str = "", label: str = "") -> str:
     """A draft up for approval. The text is shown in full -- it is exactly what gets
-    posted -- so callers keep it within ``drafts.MAX_SHOWN``."""
+    posted -- so callers keep it within ``drafts.MAX_SHOWN``. ``label``: what ✅ Post
+    also adds to the thread, said so the approval covers it."""
 
     repo = d.repo.split("/", 1)[1]
     head = f"<b>✍️ Draft reply #{d.number}</b> · {escape(repo)}"
     if version.author == "user":
         head += f" · v{version.number}, your edit"
+    elif version.author == "revised":
+        head += f" · v{version.number}, revised as you asked"
     lines = [head, fit(d.title, 200)]
     if lead:
         lines.append(f"<b>{fit(lead, 300)}</b>")
@@ -97,9 +103,12 @@ def draft(d: Draft, version: Version, error: str = "", lead: str = "") -> str:
         lines.append(f"📎 {fit(d.attachments, 300)}")
     if version.author == "model" and d.note:
         lines.append(f"🤖 <i>{fit(d.note, 300)}</i>")
+    if label:
+        lines.append(f"🏷 ✅ Post + label also labels the issue <b>{escape(label)}</b>.")
     lines += [
         f"<pre>{escape(version.text)}</pre>",
-        "<i>To change it, reply to this message with your version.</i>",
+        "<i>To change it, reply to this message with what to change. Your own text"
+        f" instead: start the reply with {OWN_TEXT}</i>",
     ]
     return "\n".join(lines)
 
@@ -141,8 +150,28 @@ def verdict(d: Draft, v: Verdict) -> str:
     return "\n".join(lines)
 
 
-def posted(d: Draft) -> str:
-    return f"✅ <b>Posted</b> the reply to #{d.number} · {escape(d.repo.split('/', 1)[1])}"
+def posted(d: Draft, label: str = "") -> str:
+    text = f"✅ <b>Posted</b> the reply to #{d.number} · {escape(d.repo.split('/', 1)[1])}"
+    return text + (f" · 🏷 {escape(label)}" if label else "")
+
+
+# Room for the prompt in a handoff message, escaped (Telegram allows 4096 in all).
+HANDOFF_ROOM = 3600
+
+
+def handoff(d: Draft, prompt: str, confirmed: bool) -> str:
+    """A bug's prompt for Claude Code, in a block Telegram copies with one tap."""
+
+    repo = d.repo.split("/", 1)[1]
+    status = "confirmed" if confirmed else "suspected, not confirmed"
+    lines = [
+        f"<b>🐞 For Claude #{d.number}</b> · {escape(repo)} · {status}",
+        f"<pre>{fit(prompt, HANDOFF_ROOM)}</pre>",
+    ]
+    if len(escape(prompt)) > HANDOFF_ROOM:
+        lines.append("<i>Shortened here; the web UI has all of it.</i>")
+    lines.append("<i>Tap to copy, then paste it into Claude Code in the project.</i>")
+    return "\n".join(lines)
 
 
 def brief(repo: str, label: str, text: str) -> str:

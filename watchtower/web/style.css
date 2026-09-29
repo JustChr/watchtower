@@ -206,6 +206,7 @@ textarea {
   width: 100%; min-height: 220px; font: 14px/1.5 var(--mono); color: var(--ink);
   background: var(--card); border: 1px solid var(--ink-3); border-radius: var(--radius); padding: 10px;
 }
+textarea.short { min-height: 0; }
 .notice { border-left: 4px solid var(--lamp); background: var(--card); padding: 10px 14px; margin: 12px 0; }
 .notice.error { border-left-color: var(--critical); }
 
