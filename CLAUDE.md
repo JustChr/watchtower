@@ -3,7 +3,8 @@
 Watchtower — watches GitHub repositories, has a **local** LLM (Ollama)
 summarise new activity, and reports it to a Telegram group (one topic per kind
 of work). Phase 2 drafts replies to issues and discussions, posted by a GitHub
-App only after approval in Telegram; phase 3 adds PR reviews. First watched
+App only after approval in Telegram; phase 3 reviews stranger's PRs the same
+way and runs the repo's own checks on them in a gVisor sandbox. First watched
 repo: `JustChr/BavarianData`.
 
 Runs as a Docker/Portainer stack on a separate Ubuntu box. This Windows machine
