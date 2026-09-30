@@ -1,5 +1,6 @@
 """Entry point: ``python -m watchtower watcher|gateway|worker|poster|web|runner|toolchain``, or
-``health <name> <max-age-seconds>``, or ``history ...``, or ``eval ...``."""
+``health <name> <max-age-seconds>``, or ``history ...``, or ``eval ...``, or
+``review <owner/name> <number>``, or ``selftest``."""
 
 from __future__ import annotations
 
@@ -154,6 +155,32 @@ def selftest() -> int:
     return 1 if bad else 0
 
 
+def review(argv: list[str]) -> int:
+    """Queue a review of an existing PR (run in the watcher container): the watcher
+    fetches it, runs its checks if they are on, the worker reviews it, Telegram offers it."""
+
+    from . import watcher
+    from .github import GitHub
+    from .store import Store
+
+    if len(argv) != 2 or argv[0].count("/") != 1 or not argv[1].isdigit():
+        print("python -m watchtower review <owner/name> <pull request number>", file=sys.stderr)
+        return 2
+    cfg = config.load()
+    if argv[0] not in cfg.repos or not cfg.reviews:
+        print(
+            "that repo isn't watched, or llm.review_prs / the agent model is off", file=sys.stderr
+        )
+        return 2
+    store = Store(config.DATA_DIR / "watchtower.db")
+    print(
+        watcher.queue_review(
+            GitHub(config.read_secret("github_read")), store, argv[0], int(argv[1])
+        )
+    )
+    return 0
+
+
 def main(argv: list[str]) -> int:
     logging.basicConfig(
         level=os.environ.get("WATCHTOWER_LOG", "INFO").upper(),
@@ -188,6 +215,8 @@ def main(argv: list[str]) -> int:
             from . import toolchain
 
             toolchain.run()
+        case ["review", *rest]:
+            return review(rest)
         case ["selftest"]:
             return selftest()
         case ["health", name, max_age]:

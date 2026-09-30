@@ -116,6 +116,27 @@ def prepare(
     return True
 
 
+def queue_review(source: Source, store: Store, repo: str, number: int) -> str:
+    """Ask for a review of an existing PR, whoever wrote it (``python -m watchtower review``):
+    a draft in ``prep`` like a new stranger's PR gets. Returns what to tell the user."""
+
+    item = source.get_json(f"/repos/{repo}/issues/{number}")
+    if "pull_request" not in item:
+        return f"{repo}#{number} is not a pull request"
+    key = f"{repo}#review-{number}-{int(time.time())}"  # a new one each time it is asked for
+    store.add_draft(
+        key,
+        repo=repo,
+        number=number,
+        kind="pr",
+        topic="reviews",
+        title=item["title"],
+        url=item["html_url"],
+        status="prep",
+    )
+    return f"queued a review of {repo}#{number}: {item['title']}"
+
+
 def _settled(draft, source, store, root, box, toolbox, tools) -> bool:
     """Whether the draft's checks have settled; an error is logged and tried again next
     poll (it must not stop the watcher)."""

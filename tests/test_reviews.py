@@ -582,3 +582,21 @@ def test_the_web_page_shows_a_reviews_assessment(cfg, tmp_path, hist):
     assert found["findings"][0]["where"] == "src/f0.py:3" and found["findings"][0]["mark"] == "🛑"
     assert found["facts"] == ["By stranger."] and found["commit"] == HEAD
     assert data.draft(draft.id)["handoff"] is None  # no bug prompt for a PR
+
+
+def test_a_review_of_an_existing_pr_can_be_asked_for(store):
+    class One:
+        def __init__(self, item):
+            self.item = item
+
+        def get_json(self, path):
+            assert path == f"/repos/{REPO}/issues/7"
+            return self.item
+
+    pull = {"title": "Fix", "html_url": PR_URL, "pull_request": {}}
+    assert "queued a review of owner/repo#7: Fix" in watcher.queue_review(One(pull), store, REPO, 7)
+    (draft,) = store.drafts("prep")
+    assert (draft.kind, draft.topic, draft.url) == ("pr", "reviews", PR_URL)
+
+    assert "not a pull request" in watcher.queue_review(One({"title": "t"}), store, REPO, 7)
+    assert len(store.drafts("prep")) == 1
