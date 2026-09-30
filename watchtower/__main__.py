@@ -1,4 +1,4 @@
-"""Entry point: ``python -m watchtower watcher|gateway|worker|poster|web|runner``, or
+"""Entry point: ``python -m watchtower watcher|gateway|worker|poster|web|runner|toolchain``, or
 ``health <name> <max-age-seconds>``, or ``history ...``, or ``eval ...``."""
 
 from __future__ import annotations
@@ -184,6 +184,10 @@ def main(argv: list[str]) -> int:
             from . import runner
 
             runner.run()  # one job, then exit: compose starts a fresh container
+        case ["toolchain"]:  # a network, and nothing else: it installs the default branch's deps
+            from . import toolchain
+
+            toolchain.run()
         case ["selftest"]:
             return selftest()
         case ["health", name, max_age]:

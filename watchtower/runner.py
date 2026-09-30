@@ -36,6 +36,19 @@ def tools_for(tools_root: Path, repo: str) -> Path | None:
     return path if path.is_dir() and path.resolve().is_relative_to(tools_root.resolve()) else None
 
 
+def link_modules(tree: Path, tools: Path | None) -> None:
+    """Make the repo's installed ``node_modules`` (read-only, from the toolchain) appear in
+    the tree, where ``eslint`` and friends look for it. A tree that has its own keeps it."""
+
+    modules = tools / "node_modules" if tools else None
+    target = tree / "node_modules"
+    if modules is not None and modules.is_dir() and not target.exists() and not target.is_symlink():
+        try:
+            target.symlink_to(modules, target_is_directory=True)
+        except OSError:
+            _LOGGER.warning("could not link node_modules into the job")
+
+
 def run(
     root: Path = SANDBOX_DIR,
     tools_root: Path = TOOLS_DIR,
@@ -63,7 +76,9 @@ def run(
     except OSError, ValueError, TypeError, KeyError:
         repo = ""  # ``execute`` reports the unreadable job
     _LOGGER.info("running job %s", where.name)
-    result = sandbox.execute(where, tools_for(tools_root, repo), shell=shell, finish=finish)
+    tools = tools_for(tools_root, repo)
+    link_modules(where / sandbox.TREE, tools)
+    result = sandbox.execute(where, tools, shell=shell, finish=finish)
     _LOGGER.info(
         "job %s done: %s",
         where.name,

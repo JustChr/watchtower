@@ -24,6 +24,8 @@ _LOGGER = logging.getLogger(__name__)
 ERROR_REPORT_INTERVAL = 3600
 # The volume shared with the runner (see ``sandbox``).
 SANDBOX_DIR = Path(os.environ.get("WATCHTOWER_SANDBOX", "/sandbox"))
+TOOLCHAIN_DIR = Path(os.environ.get("WATCHTOWER_TOOLCHAIN", "/toolchain"))
+TOOLS_DIR = Path(os.environ.get("WATCHTOWER_TOOLS", "/tools"))
 # Polls a draft's thread refresh may fail before the draft is given up.
 PREP_TRIES = 3
 
@@ -114,6 +116,17 @@ def prepare(
     return True
 
 
+def _settled(draft, source, store, root, box, toolbox, tools) -> bool:
+    """Whether the draft's checks have settled; an error is logged and tried again next
+    poll (it must not stop the watcher)."""
+
+    try:
+        return checking.settle(draft, source, store, root, box, toolbox=toolbox, tools=tools)
+    except Exception:  # noqa: BLE001
+        _LOGGER.exception("%s#%d: checks", draft.repo, draft.number)
+        return False
+
+
 def prepare_drafts(
     source: Source,
     history: History,
@@ -122,6 +135,8 @@ def prepare_drafts(
     files: Path | None = None,
     root: Path | None = None,
     box: Path | None = None,
+    toolbox: Path | None = None,
+    tools: Path | None = None,
 ) -> None:
     """Hand the worker the drafts it asked for, once their thread is fetched. One
     whose thread can't be refreshed ``PREP_TRIES`` polls in a row fails, visibly.
@@ -133,12 +148,14 @@ def prepare_drafts(
         checked = draft.kind == "pr" and box is not None and root is not None
         current = checking.state(store, draft) if checked else None
         if current and current["state"] in checking.OPEN:  # thread and PR already fetched
-            if checking.settle(draft, source, store, root, box):
+            if _settled(draft, source, store, root, box, toolbox, tools):
                 store.prepared(draft.id)
             continue
         if prepare(draft, source, history, files, root):
             failures.pop(draft.id, None)
-            if checked and not checking.settle(draft, source, store, root, box):
+            if checked and not checking.settle(
+                draft, source, store, root, box, toolbox=toolbox, tools=tools
+            ):
                 continue
             store.prepared(draft.id)
             continue
@@ -258,6 +275,8 @@ def run(cfg: Config) -> None:
                 DATA_DIR / "attachments",
                 root,
                 SANDBOX_DIR if cfg.run_checks and cfg.reviews else None,
+                TOOLCHAIN_DIR if TOOLCHAIN_DIR.is_dir() else None,
+                TOOLS_DIR if TOOLS_DIR.is_dir() else None,
             )
         history_due = cfg.history_minutes and started - synced >= cfg.history_minutes * 60
         if resume_at is None and history_due:

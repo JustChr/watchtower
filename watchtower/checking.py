@@ -6,6 +6,8 @@ For a review draft waiting in ``prep``, ``settle`` moves its ``gates`` stage alo
 - the PR doesn't merge into its base -> ``conflict`` (the review asks for a rebase);
 - GitHub won't say, or the merged tree can't be fetched -> ``unknown``;
 - another job is in the sandbox -> ``waiting`` (one at a time);
+- the repo's dependencies aren't installed (or are stale) -> a setup job for the toolchain
+  service, ``setting-up``, then ``setup-failed`` if they can't be installed;
 - else the merged tree and the steps become a job -> ``running``, then ``done`` with the
   runner's result, or ``timeout`` if it never comes.
 
@@ -21,14 +23,14 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from . import gates, pr, sandbox, snapshot
+from . import gates, pr, sandbox, snapshot, toolchain
 from .store import Draft, Store
 
 _LOGGER = logging.getLogger(__name__)
 
 STAGE = "gates"
 WAIT_SECONDS = sandbox.TOTAL_SECONDS + 900  # a result later than this isn't coming
-OPEN = frozenset({"waiting", "running"})
+OPEN = frozenset({"waiting", "setting-up", "running"})
 
 
 def state(store: Store, draft: Draft) -> dict | None:
@@ -46,11 +48,15 @@ def settle(
     root: Path,
     box: Path,
     *,
+    toolbox: Path | None = None,
+    tools: Path | None = None,
     now: float | None = None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> bool:
     """Advance the draft's checks; ``True`` once they have settled. ``root``: the code
-    snapshots (``/data/repos``), ``box``: the sandbox volume."""
+    snapshots (``/data/repos``), ``box``: the sandbox volume; ``toolbox`` and ``tools``: the
+    toolchain service's jobs and the environments it installs (without them, nothing is
+    installed here and the runner uses what is there)."""
 
     now = time.time() if now is None else now
     current = state(store, draft)
@@ -68,6 +74,30 @@ def settle(
             sandbox.remove_job(box, job)
             return True
         return False
+    installed = False
+    if current and current["state"] == "setting-up" and toolbox is not None:
+        job = current["setup_job"]
+        result = sandbox.read_result(toolbox, job)
+        if result is None:
+            if now - current["started"] > WAIT_SECONDS:
+                _put(store, draft, **{**current, "state": "setup-failed", "result": None})
+                sandbox.remove_job(toolbox, job)
+                return True
+            return False
+        sandbox.remove_job(toolbox, job)
+        if not result.green:
+            _put(
+                store,
+                draft,
+                **{
+                    **current,
+                    "state": "setup-failed",
+                    "job": job,
+                    "result": dataclasses.asdict(result),
+                },
+            )
+            return True
+        installed = True  # the dependencies are in: on to the checks
 
     main = snapshot.path_for(root, draft.repo)
     plan = gates.plan(main) if main.is_dir() else gates.Plan()
@@ -92,6 +122,18 @@ def settle(
         else:
             _put(store, draft, state="unknown", reason="GitHub couldn't say if it merges", **info)
         return True
+
+    if plan.setup and toolbox is not None and tools is not None and not installed:
+        key = toolchain.tools_key(main, plan.setup)
+        if toolchain.current_key(tools, draft.repo) != key:
+            if sandbox.busy(toolbox):
+                if not current:
+                    _put(store, draft, state="waiting", **info)
+                return False
+            setup = toolchain.setup_job(f"t{draft.id}", draft.repo, key, plan.setup)
+            sandbox.write_job(toolbox, setup, main)
+            _put(store, draft, state="setting-up", setup_job=setup.id, started=now, **info)
+            return False
     if sandbox.busy(box):
         if not current:
             _put(store, draft, state="waiting", **info)

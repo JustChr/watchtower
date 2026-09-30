@@ -63,7 +63,10 @@ end-to-end locally.
     clean environment, per-step and total clocks, capped output, and writes
     `result.json` only after sweeping every process the steps started. The
     result is **untrusted**: `parse_result` accepts one fixed shape, sizes capped.
-    `runner.py` is the container's loop (one job, then exit → compose restarts
+    `toolchain.py` (its own service: network, no secrets, no `/data`) installs the
+    default branch's `setup` steps into a per-repo venv + `node_modules` under
+    `/tools` (key = hash of dependency files; swapped in only when all steps
+    passed); the runner reads it read-only. `runner.py` is the container's loop (one job, then exit → compose restarts
     it fresh); `checking.py` is the watcher's part: a review draft stays in
     `prep` while its `gates` stage settles (`none`/`conflict`/`unknown`/
     `waiting`/`running`/`done`/`timeout`), one job in the sandbox at a time;
@@ -106,8 +109,9 @@ end-to-end locally.
     the watcher (briefs) or the poster (drafts) applies them. `callback_data`
     is `kind:action:id`.
   - `github.py`, `telegram.py`, `config.py`, `__main__.py`.
-- `compose.yaml`, `Dockerfile` — one image, six services (the `runner`
-  runs under gVisor with no network, no secrets, no `/data`).
+- `compose.yaml`, `Dockerfile` — one image, seven services (the `runner`
+  runs under gVisor with no network, no secrets, no `/data`; the `toolchain`
+  has a network of its own and nothing else).
 - `config.example.toml` — template; the real `config.toml` lives only on the host.
 - `tests/` — pytest, no network.
 

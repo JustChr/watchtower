@@ -185,8 +185,11 @@ hosts = ["jarvis.home.arpa"]
    while `llm.run_checks = false`): it runs a stranger's code, so it needs
    gVisor (`runsc`) as a Docker runtime, and two folders it may use:
    ```bash
-   sudo install -d -o 10001 -g 10001 -m 700 /opt/watchtower/sandbox /opt/watchtower/tools
+   sudo install -d -o 10001 -g 10001 -m 700 /opt/watchtower/sandbox /opt/watchtower/toolchain /opt/watchtower/tools
    ```
+   (`toolchain` is the second service under gVisor: it has a network, but only for
+   installing a repo's dependencies from its default branch into `tools`, which the
+   runner reads. Turn the checks on with `llm.run_checks = true` once the selftest passes.)
    gVisor: install `runsc` from Google's apt repository (gvisor.dev/docs/user_guide/install),
    then `sudo runsc install && sudo systemctl restart docker`. Check with
    `sudo docker run --rm --runtime=runsc alpine dmesg | head -1` ("Starting gVisor").

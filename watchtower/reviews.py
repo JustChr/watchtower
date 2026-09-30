@@ -276,6 +276,8 @@ _WHY = {
     "conflict": "No checks ran: it doesn't merge into its base branch.",
     "unknown": "No checks ran: {reason}.",
     "timeout": "The checks didn't finish in time, so there is no result.",
+    "setup-failed": "No checks ran: the project's dependencies couldn't be installed in the"
+    " sandbox.",
 }
 
 
@@ -294,6 +296,20 @@ def _plain(text: str, limit: int) -> str:
     return " ".join(llm.scrub(text).replace("`", "'").split())[:limit]
 
 
+def _failed_output(stage: dict) -> str:
+    """What the steps of a failed install printed (data), if the result is readable."""
+
+    try:
+        result = sandbox.parse_result(json.dumps(stage.get("result")), stage["job"])
+    except KeyError, TypeError, ValueError:
+        return ""
+    return "\n\n".join(
+        f"--- {_plain(s.name, 80)}\n{s.output.strip()[-1500:]}"
+        for s in (result.steps if result else ())
+        if s.status != "passed" and s.output.strip()
+    )
+
+
 def gate_facts(stage: dict | None) -> tuple[list[str], str]:
     """What the checks did, as facts for the model, and the output of the ones that
     failed (data)."""
@@ -301,6 +317,8 @@ def gate_facts(stage: dict | None) -> tuple[list[str], str]:
     if not stage:
         return [], ""
     state = stage.get("state")
+    if state == "setup-failed":
+        return [_WHY[state]], _failed_output(stage)
     if state in _WHY:
         return [_WHY[state].format(reason=_plain(str(stage.get("reason", "")), 150))], ""
     if state != "done":

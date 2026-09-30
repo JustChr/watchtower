@@ -318,10 +318,12 @@ def execute(
     *,
     shell: Sequence[str] = SHELL,
     finish: Callable[[], None] | None = None,
+    publish: bool = True,
 ) -> Result:
     """Run the job in ``where`` and write its result. ``tools``: the repo's installed
-    environment (read-only). ``finish`` runs after the last step, before the result is
-    written -- the runner passes ``sweep``."""
+    environment. ``finish`` runs after the last step, before the result is written --
+    the runner passes ``sweep``. ``publish=False``: only run ``finish`` and return the
+    result; the caller has more to do first and calls ``publish`` itself."""
 
     try:
         job = Job.from_json((where / JOB_FILE).read_text(encoding="utf-8"))
@@ -346,8 +348,17 @@ def execute(
                 continue
             steps.append(run_step(step, tree, env, min(job.step_seconds, left), shell))
     result = Result(job.id, tuple(steps), job.not_run, round(time.monotonic() - started, 1))
-    _write(where, result, finish)
+    if publish:
+        _write(where, result, finish)
+    elif finish is not None:
+        finish()
     return result
+
+
+def publish(where: Path, result: Result) -> None:
+    """Write ``result`` where the watcher looks for it (atomically)."""
+
+    _write(where, result, None)
 
 
 def _write(where: Path, result: Result, finish: Callable[[], None] | None) -> None:
