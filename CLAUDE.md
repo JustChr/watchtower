@@ -63,6 +63,13 @@ end-to-end locally.
     clean environment, per-step and total clocks, capped output, and writes
     `result.json` only after sweeping every process the steps started. The
     result is **untrusted**: `parse_result` accepts one fixed shape, sizes capped.
+    `runner.py` is the container's loop (one job, then exit → compose restarts
+    it fresh); `checking.py` is the watcher's part: a review draft stays in
+    `prep` while its `gates` stage settles (`none`/`conflict`/`unknown`/
+    `waiting`/`running`/`done`/`timeout`), one job in the sandbox at a time;
+    `reviews.gate_report` writes the "Checks" section by code. Off unless
+    `llm.run_checks`. `python -m watchtower selftest` (in the watcher container)
+    proves the isolation on the box.
   - `poster.py` — the only GitHub writer: holds the App key (`github_app.py`),
     applies draft decisions, posts exactly the approved version; no model.
   - `web.py` — the web UI (stdlib `http.server`, JSON API) + `web/` (one
@@ -99,7 +106,8 @@ end-to-end locally.
     the watcher (briefs) or the poster (drafts) applies them. `callback_data`
     is `kind:action:id`.
   - `github.py`, `telegram.py`, `config.py`, `__main__.py`.
-- `compose.yaml`, `Dockerfile` — one image, five services.
+- `compose.yaml`, `Dockerfile` — one image, six services (the `runner`
+  runs under gVisor with no network, no secrets, no `/data`).
 - `config.example.toml` — template; the real `config.toml` lives only on the host.
 - `tests/` — pytest, no network.
 

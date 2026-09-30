@@ -7,10 +7,11 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import os
 import time
 from pathlib import Path
 
-from . import attachments, brief, drafts, pr, render, snapshot
+from . import attachments, brief, checking, drafts, pr, render, snapshot
 from .config import DATA_DIR, Config, read_secret
 from .events import Event, Source, poll_repo
 from .github import GitHub, GitHubError, RateLimited
@@ -21,6 +22,8 @@ _LOGGER = logging.getLogger(__name__)
 
 # Report a repeating error to Telegram at most this often (seconds).
 ERROR_REPORT_INTERVAL = 3600
+# The volume shared with the runner (see ``sandbox``).
+SANDBOX_DIR = Path(os.environ.get("WATCHTOWER_SANDBOX", "/sandbox"))
 # Polls a draft's thread refresh may fail before the draft is given up.
 PREP_TRIES = 3
 
@@ -118,13 +121,25 @@ def prepare_drafts(
     failures: dict[int, int],
     files: Path | None = None,
     root: Path | None = None,
+    box: Path | None = None,
 ) -> None:
     """Hand the worker the drafts it asked for, once their thread is fetched. One
-    whose thread can't be refreshed ``PREP_TRIES`` polls in a row fails, visibly."""
+    whose thread can't be refreshed ``PREP_TRIES`` polls in a row fails, visibly.
+
+    ``box``: the sandbox volume. A PR's review then also waits for its checks to settle
+    (``checking``): they take minutes, and the draft stays in ``prep`` meanwhile."""
 
     for draft in store.drafts("prep"):
+        checked = draft.kind == "pr" and box is not None and root is not None
+        current = checking.state(store, draft) if checked else None
+        if current and current["state"] in checking.OPEN:  # thread and PR already fetched
+            if checking.settle(draft, source, store, root, box):
+                store.prepared(draft.id)
+            continue
         if prepare(draft, source, history, files, root):
             failures.pop(draft.id, None)
+            if checked and not checking.settle(draft, source, store, root, box):
+                continue
             store.prepared(draft.id)
             continue
         failures[draft.id] = failures.get(draft.id, 0) + 1
@@ -235,7 +250,15 @@ def run(cfg: Config) -> None:
         apply_decisions(store, history)
         resume_at = poll_once(github, store, cfg, titles, errors)
         if resume_at is None:
-            prepare_drafts(github, history, store, failures, DATA_DIR / "attachments", root)
+            prepare_drafts(
+                github,
+                history,
+                store,
+                failures,
+                DATA_DIR / "attachments",
+                root,
+                SANDBOX_DIR if cfg.run_checks and cfg.reviews else None,
+            )
         history_due = cfg.history_minutes and started - synced >= cfg.history_minutes * 60
         if resume_at is None and history_due:
             synced = started

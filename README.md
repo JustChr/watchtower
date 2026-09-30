@@ -176,11 +176,22 @@ hosts = ["jarvis.home.arpa"]
    add `watchtower-llm` to the Ollama service's `networks:` (keeping `default`).
 5. **GitHub App** (posts approved replies): GitHub → Settings → Developer
    settings → GitHub Apps → New. Webhook off; repository permissions
-   **Issues: Read and write**, **Discussions: Read and write** (Metadata: read
-   is added by itself); only on this account. Install it on the watched repos.
+   **Issues: Read and write**, **Discussions: Read and write**, **Pull
+   requests: Read and write** (PR reviews; Metadata: read is added by itself); only on this account. Install it on the watched repos.
    Put its App ID into `github.app_id`, and a generated private key into
    `/opt/watchtower/secrets/github_app_key` (10001, mode 400 like the others).
    The stack won't start without that file.
+6. **Sandbox for PR checks** (the `runner` service; the stack needs this even
+   while `llm.run_checks = false`): it runs a stranger's code, so it needs
+   gVisor (`runsc`) as a Docker runtime, and two folders it may use:
+   ```bash
+   sudo install -d -o 10001 -g 10001 -m 700 /opt/watchtower/sandbox /opt/watchtower/tools
+   ```
+   gVisor: install `runsc` from Google's apt repository (gvisor.dev/docs/user_guide/install),
+   then `sudo runsc install && sudo systemctl restart docker`. Check with
+   `sudo docker run --rm --runtime=runsc alpine dmesg | head -1` ("Starting gVisor").
+   After deploying, prove the isolation: `sudo docker exec watchtower-watcher-1
+   python -m watchtower selftest` must end in `ISOLATED`.
 
 ## Deploy
 
@@ -194,7 +205,7 @@ a push redeploys by itself; otherwise *Pull and redeploy*.
 
 **CLI:** copy or clone this folder to the host, then `docker compose up -d`.
 
-All five containers should turn *healthy* within a minute and post "online" into
+The five containers with a healthcheck should turn *healthy* within a minute and post "online" into
 ⚙️ System (the poster names the App it posts as). Send `/status` or `/ping` in the
 group to check the gateway.
 
@@ -205,4 +216,5 @@ python -m pytest
 python -m ruff check . && python -m ruff format --check .
 ```
 
-Standard library only, plus `cryptography` for the App's JWT; Python 3.14.
+Standard library only, plus `cryptography` for the App's JWT and `PyYAML` to read a
+repo's CI workflows; Python 3.14.

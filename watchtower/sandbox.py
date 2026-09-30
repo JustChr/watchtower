@@ -356,3 +356,39 @@ def _write(where: Path, result: Result, finish: Callable[[], None] | None) -> No
     tmp = where / (RESULT_FILE + ".new")
     tmp.write_text(result.to_json(), encoding="utf-8")
     tmp.replace(where / RESULT_FILE)
+
+
+def busy(root: Path) -> bool:
+    """Whether a job is in the sandbox already. The runner shares its volume with the code
+    it runs, so a second job's tree could be tampered with by the first: one at a time."""
+
+    folder = root / JOBS
+    return folder.is_dir() and any(folder.iterdir())
+
+
+def remove_job(root: Path, job_id: str) -> None:
+    shutil.rmtree(job_dir(root, job_id), ignore_errors=True)
+
+
+# -- proving the isolation on the box --------------------------------------------------------
+
+_NO_NETWORK = (
+    'python3 -c "import socket, sys\n'
+    "try:\n    socket.create_connection(('1.1.1.1', 53), 3)\n"
+    'except OSError:\n    sys.exit(0)\nsys.exit(1)"'
+)
+# Each probe passes when the isolation holds. The last one only shows what it sees.
+SELFTEST_STEPS = (
+    gates.Step("runs a command", "echo hello"),
+    gates.Step("a failing command is reported as failed", "exit 3"),
+    gates.Step("no network", _NO_NETWORK),
+    gates.Step("no /data", "test ! -e /data"),
+    gates.Step("no secrets", 'test ! -e /run/secrets/github_read && test -z "$GITHUB_TOKEN"'),
+    gates.Step("read-only root", "if touch /usr/probe 2>/dev/null; then exit 1; fi"),
+    gates.Step("cannot see the config", "test ! -e /config"),
+    gates.Step("kernel (should say gVisor)", "dmesg 2>&1 | head -1 || true"),
+)
+
+
+def selftest_job() -> Job:
+    return Job("selftest", "owner/repo", 0, "0" * 40, SELFTEST_STEPS, step_seconds=30)

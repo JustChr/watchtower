@@ -29,6 +29,10 @@ services:
   watcher:
     <<: *service
     command: [watcher]
+    volumes:                  # the shared list is replaced: add the sandbox for jobs
+      - /opt/watchtower/data:/data
+      - /opt/watchtower/config.toml:/config/config.toml:ro
+      - /opt/watchtower/sandbox:/sandbox   # jobs for the runner, its results back
     secrets: [github_read]
     networks: [egress]        # GitHub only; never talks to the model
     healthcheck:
@@ -74,6 +78,34 @@ services:
       test: [CMD, python, -m, watchtower, health, web, "120"]
       interval: 60s
       start_period: 30s
+
+  # Runs a stranger's code (a PR's checks). Nothing of the others: no config, no secret,
+  # no /data, no network. gVisor (`runsc`, installed on the host) puts a user-space
+  # kernel between that code and the host's. One job, then the container exits and
+  # restarts fresh, so nothing a job leaves behind reaches the next.
+  runner:
+    image: ghcr.io/justchr/watchtower:latest
+    pull_policy: always
+    command: [runner]
+    runtime: runsc
+    restart: always
+    init: true
+    user: "10001:10001"
+    read_only: true
+    tmpfs: ["/tmp:size=1g"]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    network_mode: none
+    mem_limit: 4g
+    memswap_limit: 4g
+    cpus: 2
+    pids_limit: 512
+    volumes:
+      - /opt/watchtower/sandbox:/sandbox      # the job in, the result out: nothing else
+      - /opt/watchtower/tools:/tools:ro       # the repos' installed environments
+    logging:
+      driver: json-file
+      options: {max-size: 5m, max-file: "3"}
 
 secrets:
   github_read:

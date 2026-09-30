@@ -1,4 +1,4 @@
-"""Entry point: ``python -m watchtower watcher|gateway|worker|poster|web``, or
+"""Entry point: ``python -m watchtower watcher|gateway|worker|poster|web|runner``, or
 ``health <name> <max-age-seconds>``, or ``history ...``, or ``eval ...``."""
 
 from __future__ import annotations
@@ -118,6 +118,42 @@ def _case(arg: str) -> int | tuple[int, int]:
     return (int(number), int(at)) if at else int(number)
 
 
+def selftest() -> int:
+    """Prove the sandbox on this box: run in the watcher container, it puts a job of
+    harmless probes where the runner takes it and prints the runner's result. Every
+    probe should pass except the failing one, which must be reported as failed."""
+
+    import tempfile
+    from pathlib import Path
+
+    from . import sandbox
+    from .watcher import SANDBOX_DIR
+
+    if sandbox.busy(SANDBOX_DIR):
+        print("a job is in the sandbox already; try again in a few minutes", file=sys.stderr)
+        return 1
+    with tempfile.TemporaryDirectory() as tree:
+        (Path(tree) / "README.md").write_text("selftest")
+        sandbox.write_job(SANDBOX_DIR, sandbox.selftest_job(), Path(tree))
+    print("job written; waiting for the runner (up to two minutes)...")
+    result = None
+    for _ in range(60):
+        result = sandbox.read_result(SANDBOX_DIR, "selftest")
+        if result is not None:
+            break
+        time.sleep(2)
+    sandbox.remove_job(SANDBOX_DIR, "selftest")
+    if result is None:
+        print("no result: is the runner service up? (docker logs watchtower-runner-1)")
+        return 1
+    for s in result.steps:
+        print(f"{s.status:8} {s.name}" + (f"  -> {s.output.strip()[:100]}" if s.output else ""))
+    expected = {s.name: "failed" if "failing" in s.name else "passed" for s in result.steps}
+    bad = [s.name for s in result.steps if s.status != expected[s.name]]
+    print("ISOLATED" if not bad else f"NOT AS EXPECTED: {', '.join(bad)}")
+    return 1 if bad else 0
+
+
 def main(argv: list[str]) -> int:
     logging.basicConfig(
         level=os.environ.get("WATCHTOWER_LOG", "INFO").upper(),
@@ -144,6 +180,12 @@ def main(argv: list[str]) -> int:
             from . import poster
 
             poster.run(config.load())
+        case ["runner"]:  # no config, no secrets: it runs a stranger's code
+            from . import runner
+
+            runner.run()  # one job, then exit: compose starts a fresh container
+        case ["selftest"]:
+            return selftest()
         case ["health", name, max_age]:
             return health(name, float(max_age))
         case ["history", *rest]:

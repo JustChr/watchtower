@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import os
 import sys
 
@@ -243,3 +244,80 @@ def test_garbage_and_missing_results_are_no_result(tmp_path):
     (where / "result.json").mkdir()  # a directory in its place
     assert sandbox.read_result(root, "job-1") is None
     assert sandbox.finished(root, "job-1")
+
+
+# -- the runner process ------------------------------------------------------------------------
+
+
+def test_the_runner_waits_takes_one_job_runs_it_and_returns(tmp_path):
+    from watchtower import runner
+
+    root = tmp_path / "sandbox"
+    waits: list[float] = []
+    assert runner.run(root, tmp_path / "tools", sleep=waits.append, waits=2, finish=None) is None
+    assert waits == [runner.IDLE_SECONDS] * 2  # nothing came
+
+    sandbox.write_job(root, job([step("print('ran')")]), tree(tmp_path))
+    done = runner.run(root, tmp_path / "tools", finish=None, shell=PY)
+
+    assert done == "job-1"
+    assert sandbox.read_result(root, "job-1").green
+    # one job only: a finished job isn't taken again
+    assert runner.run(root, tmp_path / "tools", sleep=waits.append, waits=0, finish=None) is None
+
+
+def test_the_runner_finishes_with_the_sweep_it_is_given(tmp_path):
+    from watchtower import runner
+
+    root = tmp_path / "sandbox"
+    sandbox.write_job(root, job([step("pass")]), tree(tmp_path))
+    swept: list[bool] = []
+    runner.run(root, tmp_path, finish=lambda: swept.append(True), shell=PY)
+    assert swept == [True]
+
+
+def test_the_repos_tools_are_found_only_inside_the_tools_folder(tmp_path):
+    from watchtower import runner
+
+    (tmp_path / "owner" / "repo").mkdir(parents=True)
+    assert runner.tools_for(tmp_path, "owner/repo") == tmp_path / "owner" / "repo"
+    assert runner.tools_for(tmp_path, "owner/other") is None
+    assert runner.tools_for(tmp_path, "../etc/passwd") is None
+    assert runner.tools_for(tmp_path, "owner/../owner/repo") is None
+    assert runner.tools_for(tmp_path, "no slash") is None
+
+
+def test_the_runner_is_a_command_and_compose_sandboxes_it():
+    from pathlib import Path
+
+    import yaml
+
+    from watchtower import __main__ as entry
+
+    assert "runner" in entry.__doc__
+    compose = yaml.safe_load((Path(__file__).parents[1] / "compose.yaml").read_text("utf-8"))
+    service = compose["services"]["runner"]
+    assert service["runtime"] == "runsc" and service["network_mode"] == "none"
+    assert service["cap_drop"] == ["ALL"] and service["read_only"] is True
+    assert "secrets" not in service and "networks" not in service
+    mounted = [v.split(":")[1] for v in service["volumes"]]
+    assert mounted == ["/sandbox", "/tools"]  # never /data, never the config
+    assert service["volumes"][1].endswith(":ro")
+    for name in ("watcher", "gateway", "worker", "poster", "web"):
+        assert compose["services"][name].get("runtime") is None  # only the runner needs gVisor
+
+
+def test_the_selftest_job_probes_the_isolation_and_ends_in_a_known_shape():
+    probe = sandbox.selftest_job()
+    names = [s.name for s in probe.steps]
+    assert {"no network", "no /data", "no secrets", "read-only root"} <= set(names)
+    assert probe.id == "selftest" and probe.step_seconds <= 60
+    # what the command reports: one probe is meant to fail, the kernel line only shows
+    assert sum("failing" in n for n in names) == 1
+    assert (
+        Path(__file__)
+        .parents[1]
+        .joinpath("watchtower", "__main__.py")
+        .read_text("utf-8")
+        .count('["selftest"]')
+    )
