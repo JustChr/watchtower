@@ -107,7 +107,12 @@ end-to-end locally.
     reject reasons) — as `decision` rows; an instruction becomes a `revise`
     job: the worker has the model rework the latest version (`drafts.revise`);
     the watcher (briefs) or the poster (drafts) applies them. `callback_data`
-    is `kind:action:id`.
+    is `kind:action:id`. A draft whose text still holds a `[YOUR DECISION: …]`
+    line can't be posted: `drafts.offer` shows the assessment's `options`
+    (2–4, from the model, `analysis.parse_options`) as buttons `opt1`–`opt4`
+    instead of ✅ Post; a tap becomes a `revise` instruction built from the
+    stored option (`poster.choose`), and the settled revision gets ✅ Post.
+    The web page does the same (`choices`).
   - `github.py`, `telegram.py`, `config.py`, `__main__.py`.
 - `compose.yaml`, `Dockerfile` — one image, seven services (the `runner`
   runs under gVisor with no network, no secrets, no `/data`; the `toolchain`

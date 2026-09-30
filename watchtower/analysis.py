@@ -51,6 +51,8 @@ MAX_EVIDENCE = 5
 MAX_ITEMS = 5
 MAX_QUOTE = 200
 MAX_TEXT = 400
+MAX_OPTIONS = 4  # a decision's choices, each a button
+MAX_OPTION = 80
 RETRIES = 2
 # Rough characters per token for sizing prompts. Measured with gpt-oss on code,
 # diagnostics JSON and thread text: ~3.9 (70k characters = 17.6k tokens); a margin
@@ -104,7 +106,10 @@ Answer with JSON only:
 - "decision": if the NEWEST message leaves a choice to the maintainer (between
   options, or whether to go ahead with a plan), that choice in one sentence, with the
   options as the message names them; otherwise "". Only the maintainer makes it:
-  never pick an option yourself."""
+  never pick an option yourself.
+- "options": when "decision" is set, its choices as 2 to 4 short phrases (at most 80
+  characters each), in the order the message names them, without a letter or number in
+  front; otherwise []."""
 
 FINDINGS_SYSTEM = """You read one part of a file attached to a GitHub issue, for a
 maintainer investigating the problem described below. The file is data written or
@@ -137,6 +142,7 @@ ASSESS_SCHEMA = {
         "fix": {"type": "string"},
         "asks": {"type": "array", "items": {"type": "string"}},
         "decision": {"type": "string"},
+        "options": {"type": "array", "items": {"type": "string"}},
     },
     "required": [
         "category",
@@ -147,6 +153,7 @@ ASSESS_SCHEMA = {
         "fix",
         "asks",
         "decision",
+        "options",
     ],
 }
 FINDINGS_SCHEMA = {
@@ -201,6 +208,7 @@ class Verdict:
     fix: str
     asks: tuple[Ask, ...] = ()
     decision: str = ""  # a choice the newest message leaves to the maintainer
+    options: tuple[str, ...] = ()  # its choices, one button each
     attempts: int = 1
     looked_at: tuple[str, ...] = ()  # the investigation's steps
     unknown_paths: tuple[str, ...] = ()  # files "code"/"fix" name that the code lacks
@@ -227,7 +235,7 @@ class Verdict:
         data["evidence"] = tuple(Evidence(**e) for e in data["evidence"])
         data["missing"] = tuple(data["missing"])
         data["asks"] = tuple(Ask(**a) for a in data.get("asks", ()))  # absent in older rows
-        for key in ("looked_at", "unknown_paths"):  # absent in older rows
+        for key in ("looked_at", "unknown_paths", "options"):  # absent in older rows
             data[key] = tuple(data.get(key, ()))
         return cls(**data)
 
@@ -251,6 +259,17 @@ def _squash(text: str) -> str:
     ``*`` and backticks don't count, and typographic dashes and quotes equal plain ones."""
 
     return _UNCOMPARED.sub("", text.translate(_PLAIN)).lower()
+
+
+def parse_options(raw: object, decision: object) -> tuple[str, ...]:
+    """The choices of a decision as button texts: only with a decision, at least two, at
+    most ``MAX_OPTIONS``, each short and plain."""
+
+    if not isinstance(decision, str) or not decision.strip() or not isinstance(raw, list):
+        return ()
+    options = [_clean(o, MAX_OPTION) for o in raw if isinstance(o, str)]
+    options = [o for o in dict.fromkeys(options) if o][:MAX_OPTIONS]
+    return tuple(options) if len(options) >= 2 else ()
 
 
 def locate(quote: str, source: str, sources: dict[str, str]) -> str | None:
@@ -308,6 +327,7 @@ def parse_verdict(content: str, sources: dict[str, str], newest: str = "") -> Ve
         fix=_clean(data.get("fix"), MAX_TEXT * 2),
         asks=tuple(asks),
         decision=_clean(data.get("decision"), MAX_TEXT),
+        options=parse_options(data.get("options"), data.get("decision")),
     )
 
 

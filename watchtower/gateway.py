@@ -30,6 +30,7 @@ BUTTON_ACTIONS = {
         "post": "Posting…",
         "plain": "Posting, without the label…",
         "reject": "Rejected. Reply to the draft with a reason if you like.",
+        **{f"opt{n}": "Settling it as you chose…" for n in range(1, 5)},
     },
 }
 # Messages whose replies count (their outbox ``ref`` is ``kind:id``).

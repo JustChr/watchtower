@@ -527,6 +527,7 @@ def assessment_text(verdict: Verdict) -> str:
         lines.append(f'Asked [{state}]: "{a.quote}"')
     if verdict.decision:
         lines.append(f"Decision for the maintainer (don't make it): {verdict.decision}")
+        lines += [f"  Option {n}: {o}" for n, o in enumerate(verdict.options, 1)]
     return "\n".join(lines)
 
 
@@ -934,6 +935,42 @@ def revise(
     return reply, note
 
 
+MAX_CHOICES = 4  # buttons for a decision's options (``gateway`` knows opt1..opt4)
+
+
+def options_of(draft: Draft) -> tuple[str, ...]:
+    """The choices of the decision the draft's assessment left to the maintainer."""
+
+    verdict = Verdict.from_json(draft.verdict)
+    if verdict is not None:
+        return verdict.options
+    from . import reviews  # reviews builds on this module
+
+    review = reviews.ReviewVerdict.from_json(draft.verdict)
+    return review.options if review else ()
+
+
+def choose_instruction(number: int, option: str) -> str:
+    """What a tap on option ``number`` tells the model: settle the open decision so."""
+
+    return (
+        f"Settle the open decision: the maintainer chooses option {number}, {option}. Write"
+        " that choice into the text where the [YOUR DECISION] line stands, in the text's"
+        " own words, and keep the rest as it is."
+    )
+
+
+def choices(draft: Draft, version: Version) -> list[dict]:
+    """For the web page: the buttons of a version that still has a decision open."""
+
+    if not open_decision(version.text):
+        return []
+    return [
+        {"label": f"{n}. {option}", "instruction": choose_instruction(n, option)}
+        for n, option in enumerate(options_of(draft)[:MAX_CHOICES], 1)
+    ]
+
+
 def offer(
     store: Store,
     draft: Draft,
@@ -946,7 +983,14 @@ def offer(
     A draft whose post adds a label (``handoff.label``) can be posted without it."""
 
     tag = handoff.label(draft)
-    if tag:
+    if open_decision(version.text):
+        # Not postable until it's settled: the choices come instead of ✅ Post, and a
+        # tap becomes an instruction to revise (``poster.choose``).
+        buttons = [
+            (f"{n}. {option}"[:60], f"draft:opt{n}:{version.id}")
+            for n, option in enumerate(options_of(draft)[:MAX_CHOICES], 1)
+        ]
+    elif tag:
         buttons = [
             (f"✅ Post + label {tag}", f"draft:post:{version.id}"),
             ("✅ Post only", f"draft:plain:{version.id}"),

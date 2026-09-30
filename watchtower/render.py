@@ -118,6 +118,11 @@ def draft(d: Draft, version: Version, error: str = "", lead: str = "", label: st
         lines.append("<i>✅ Post posts this as a comment review: it never approves or merges.</i>")
     if label:
         lines.append(f"🏷 ✅ Post + label also labels the issue <b>{escape(label)}</b>.")
+    if "[your decision" in version.text.lower():
+        lines.append(
+            "<i>⚖️ A decision is left open in this text. Pick an option below, or reply"
+            " with your decision: ✅ Post comes once it's settled.</i>"
+        )
     lines += [
         f"<pre>{escape(version.text)}</pre>",
         "<i>To change it, reply to this message with what to change. Your own text"
@@ -149,6 +154,7 @@ def verdict(d: Draft, v: Verdict) -> str:
             lines.append(f"• {mark}«{fit(a.quote, 100)}»")
     if v.decision:
         lines.append(f"⚖️ <b>Yours to decide</b>: {fit(v.decision, 200)}")
+        lines += [f"  {n}. {fit(o, 80)}" for n, o in enumerate(v.options, 1)]
     if v.missing:
         lines.append("<b>Missing</b>")
         lines += [f"• {fit(m, 110)}" for m in v.missing]
@@ -193,6 +199,7 @@ def review_verdict(d: Draft, v) -> str:
             used += len(item) + 1
     if v.decision:
         lines.append(f"⚖️ <b>Yours to decide</b>: {fit(v.decision, 200)}")
+        lines += [f"  {n}. {fit(o, 80)}" for n, o in enumerate(v.options, 1)]
     if v.missing:
         lines.append("<b>Missing</b>")
         lines += [f"• {fit(m, 110)}" for m in v.missing]

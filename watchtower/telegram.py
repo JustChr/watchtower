@@ -49,6 +49,10 @@ def to_markdown(text: str, entities: list[dict] | None) -> str:
     return "".join(pieces)
 
 
+# Labels longer than this in all share one row of buttons; else one button per row.
+ROW_CHARS = 45
+
+
 class TelegramError(Exception):
     def __init__(self, code: int, description: str, retry_after: float | None = None) -> None:
         super().__init__(f"{code}: {description}")
@@ -112,7 +116,12 @@ class Bot:
             params["message_thread_id"] = thread_id
         rows = []
         if buttons:
-            rows.append([{"text": label, "callback_data": data} for label, data in buttons])
+            cells = [{"text": label, "callback_data": data} for label, data in buttons]
+            # A few short buttons share a row; long ones (a decision's options) get their own.
+            if sum(len(label) for label, _ in buttons) > ROW_CHARS:
+                rows += [[cell] for cell in cells]
+            else:
+                rows.append(cells)
         if url and url.startswith("https://github.com/"):
             rows.append([{"text": "Open on GitHub", "url": url}])
         if rows:

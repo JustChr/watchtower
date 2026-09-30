@@ -211,6 +211,25 @@ def revise(store: Store, draft: Draft, instruction: str) -> None:
     store.enqueue(draft.topic, render.system(f"#{draft.number}: revising it as you asked…"))
 
 
+def choose(store: Store, decision_id: int, version_id: int, number: int) -> None:
+    """A tap on option ``number`` of the open decision: the model settles it that way
+    (a ``revise`` job), and the result comes back with its own buttons. The option's text
+    is taken from the assessment, not from the button."""
+
+    current = _current(store, version_id)
+    if current is None:
+        _stale(store, version_id)
+    else:
+        draft, version = current
+        options = drafts.options_of(draft)
+        if drafts.open_decision(version.text) and 1 <= number <= len(options):
+            revise(store, draft, drafts.choose_instruction(number, options[number - 1]))
+        else:
+            text = f"#{draft.number}: there is no open decision with that option."
+            store.enqueue(draft.topic, render.system(text))
+    store.mark_applied(decision_id)
+
+
 def apply_decisions(store: Store, cfg: Config, poster: Poster) -> None:
     for decision_id, action, ref, text in store.open_decisions("draft"):
         match action:
@@ -227,6 +246,8 @@ def apply_decisions(store: Store, cfg: Config, poster: Poster) -> None:
                 reply(store, decision_id, ref, text or "")
             case "offer":
                 web_offer(store, decision_id, ref)
+            case "opt1" | "opt2" | "opt3" | "opt4":
+                choose(store, decision_id, ref, int(action[3:]))
             case _:
                 store.mark_applied(decision_id)
 

@@ -219,6 +219,10 @@ class Data:
             "verdict": _review(review) if review else _verdict(verdict),
             "handoff": _handoff(found, verdict),
             "versions": versions,
+            "open_decision": bool(versions) and drafts.open_decision(versions[-1]["text"]),
+            "choices": drafts.choices(found, self.store.latest_version(draft_id))
+            if found and versions
+            else [],
             "decisions": sorted(decisions, key=lambda d: d["id"]),
             "stages": stages,
             "calls": self.trace.calls(subject=f"draft:{draft_id}", limit=500)[::-1],
@@ -340,6 +344,7 @@ def _review(v: reviews.ReviewVerdict) -> dict:
         ],
         "missing": list(v.missing),
         "decision": v.decision,
+        "options": list(v.options),
         "attempts": v.attempts,
         "looked_at": list(v.looked_at),
         "judged_at": v.judged_at,
@@ -360,6 +365,7 @@ def _verdict(verdict: Verdict | None) -> dict | None:
         "fix": verdict.fix,
         "asks": [vars(a) for a in verdict.asks],
         "decision": verdict.decision,
+        "options": list(verdict.options),
         "attempts": verdict.attempts,
         "looked_at": list(verdict.looked_at),
         "unknown_paths": list(verdict.unknown_paths),

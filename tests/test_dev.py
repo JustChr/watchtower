@@ -59,6 +59,17 @@ def test_edits_in_one_file_build_on_each_other(tmp_path):
     assert path.read_bytes() == b"three\n"
 
 
+def test_a_python_spec_needs_no_escaping_for_code(tmp_path):
+    target = tmp_path / "a.py"
+    target.write_bytes(b'print("\\n".join(x))\n')
+    spec_file = tmp_path / "spec.py"
+    spec_file.write_text(
+        "EDITS = [{'file': 'a.py', 'old': r'''\"\\n\".join''', 'new': r'''\"\\n\\n\".join'''}]\n"
+    )
+    assert dev.apply_edits(dev.load_spec(str(spec_file)), tmp_path)
+    assert target.read_bytes() == b'print("\\n\\n".join(x))\n'
+
+
 def test_the_command_line_reports_a_bad_spec_without_writing(tmp_path, capsys):
     spec_file = tmp_path / "spec.json"
     spec_file.write_text('[{"file": "missing.py", "old": "a", "new": "b"}]')

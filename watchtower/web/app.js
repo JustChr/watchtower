@@ -842,19 +842,32 @@ function versionsBlock(d, rerender) {
   revise.addEventListener("click", () => run(revise, `/api/drafts/${d.id}/revise`, { text: instruction.value }));
   const offer = h("button", { type: "button", class: "primary" }, "Post via Telegram");
   offer.addEventListener("click", () => run(offer, `/api/versions/${latest.id}/offer`));
+  // A decision left open: choose first (each choice is an instruction to the model), then post.
+  const choices = (d.choices || []).map((c) => {
+    const button = h("button", { type: "button", class: "primary" }, c.label);
+    button.addEventListener("click", () => run(button, `/api/drafts/${d.id}/revise`, { text: c.instruction }));
+    return button;
+  });
   const reject = h("button", { type: "button" }, "Reject");
   reject.addEventListener("click", () => confirm("Reject this draft?") && run(reject, `/api/versions/${latest.id}/reject`));
   return h(
     "div",
     {},
     blocks,
+    d.open_decision
+      ? [
+          h("h3", {}, "A decision is left open"),
+          h("p", { class: "small muted" }, "This text can't be posted until it is settled. Choose an option (the model writes it in), or say what to do below."),
+          choices.length ? h("div", { class: "chips" }, choices) : null,
+        ]
+      : null,
     h("h3", {}, "Tell the model what to change"),
     instruction,
     h("div", { class: "chips" }, revise),
     h(
       "div",
       { class: "chips" },
-      offer,
+      d.open_decision ? null : offer,
       h("button", { type: "button", onclick: () => ((editor.hidden = false), area.focus()) }, "Edit the text myself"),
       reject,
     ),

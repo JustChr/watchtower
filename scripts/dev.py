@@ -2,7 +2,8 @@
 """Dev tool: the steps of a working session, so nobody re-invents them.
 
     python scripts/dev.py check [pytest args]   ruff format + ruff check + pytest, short output
-    python scripts/dev.py sub SPEC.json         batch exact replacements (see ``sub``)
+    python scripts/dev.py sub SPEC.json|SPEC.py batch exact replacements; a .py spec defines
+                                                EDITS = [{"file", "old", "new"}] in r'''...'''
     python scripts/dev.py ci [--wait]           CI of HEAD; --wait polls, prints why it failed
     python scripts/dev.py ship MSGFILE [--no-push] [--trailer TEXT]
                                                 check, commit everything, push, wait for CI
@@ -21,6 +22,7 @@ from __future__ import annotations
 
 import json
 import re
+import runpy
 import shutil
 import subprocess
 import sys
@@ -95,11 +97,20 @@ def apply_edits(edits: list[dict], base: Path = ROOT) -> list[str]:
     return report
 
 
+def load_spec(spec: str) -> list[dict]:
+    """The edits of a spec file: JSON, or a ``.py`` file defining ``EDITS`` (a list of the
+    same dicts) -- raw triple-quoted strings there need no escaping for code."""
+
+    if spec.endswith(".py"):
+        return runpy.run_path(spec)["EDITS"]
+    return json.loads(Path(spec).read_text(encoding="utf-8"))
+
+
 def sub(spec: str) -> int:
     try:
-        edits = json.loads(Path(spec).read_text(encoding="utf-8"))
+        edits = load_spec(spec)
         print("\n".join(apply_edits(edits)))
-    except (OSError, ValueError, KeyError, TypeError) as err:
+    except (OSError, ValueError, KeyError, TypeError, SyntaxError) as err:
         print(f"nothing written: {err}", file=sys.stderr)
         return 1
     return 0
@@ -157,6 +168,9 @@ def ship(message_file: str, push: bool, trailer: str) -> int:
     if check([]):
         return 1
     run("git", "add", "-A")
+    message_path = Path(message_file).resolve()
+    if message_path.is_relative_to(ROOT):  # the message file isn't part of the commit
+        run("git", "reset", "-q", "--", str(message_path.relative_to(ROOT)), quiet=True)
     if not out("git", "diff", "--cached", "--name-only"):
         print("nothing to commit")
         return 0

@@ -96,7 +96,9 @@ Answer with JSON only:
   short sentence; [] if nothing
 - "decision": if merging turns on a choice only the maintainer makes (a design
   direction, a trade-off, whether the project wants this at all), that choice in one
-  sentence, with the options; otherwise "". Never pick an option yourself."""
+  sentence, with the options; otherwise "". Never pick an option yourself.
+- "options": when "decision" is set, its choices as 2 to 4 short phrases (at most 80
+  characters each), without a letter or number in front; otherwise []"""
 
 REVIEW_ASK = (
     "Now give the final review as JSON only, as described in the instructions."
@@ -170,6 +172,7 @@ class ReviewVerdict:
     attempts: int = 1
     looked_at: tuple[str, ...] = ()
     judged_at: str = ""  # what the code was ("the PR's head abc1234", or only the patches)
+    options: tuple[str, ...] = ()  # the decision's choices, one button each
 
     @property
     def unverified(self) -> list[Finding]:
@@ -184,7 +187,7 @@ class ReviewVerdict:
         if not isinstance(data, dict) or "recommendation" not in data:
             return None
         data["findings"] = tuple(Finding(**f) for f in data["findings"])
-        for key in ("missing", "facts", "looked_at"):
+        for key in ("missing", "facts", "looked_at", "options"):
             data[key] = tuple(data.get(key, ()))
         return cls(**data)
 
@@ -431,6 +434,7 @@ def assessment_text(v: ReviewVerdict) -> str:
     lines += [f"Missing: {m}" for m in v.missing]
     if v.decision:
         lines.append(f"Decision for the maintainer (don't make it): {v.decision}")
+        lines += [f"  Option {n}: {o}" for n, o in enumerate(v.options, 1)]
     return "\n".join(lines)
 
 
@@ -510,6 +514,7 @@ def parse_review(
             if m
         )[: analysis.MAX_ITEMS],
         decision=analysis._clean(parsed.get("decision"), analysis.MAX_TEXT),
+        options=analysis.parse_options(parsed.get("options"), parsed.get("decision")),
         facts=tuple(facts_),
     )
 
@@ -553,8 +558,17 @@ def _finding_schema() -> dict:
             },
             "missing": {"type": "array", "items": {"type": "string"}},
             "decision": {"type": "string"},
+            "options": {"type": "array", "items": {"type": "string"}},
         },
-        "required": ["recommendation", "confidence", "summary", "findings", "missing", "decision"],
+        "required": [
+            "recommendation",
+            "confidence",
+            "summary",
+            "findings",
+            "missing",
+            "decision",
+            "options",
+        ],
     }
 
 

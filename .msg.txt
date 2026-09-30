@@ -1,5 +1,0 @@
-Dev toolset: check, batch edit, CI wait, ship, clean, status
-
-scripts/dev.py collects the recurring session steps. Its batch editor reads a
-JSON spec (written with a file tool, not a shell heredoc), applies every edit
-or none, and keeps CRLF files CRLF.
