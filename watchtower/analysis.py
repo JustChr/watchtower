@@ -167,6 +167,12 @@ FINDINGS_SCHEMA = {
 # Left out when comparing quotes: whitespace, and Markdown's emphasis and code
 # marks (a model quoting "**A or B?**" tends to drop the stars).
 _UNCOMPARED = re.compile(r"[\s*`]+")
+# Typographic dashes and quotes a model swaps for the plain ones (a release line with
+# U+2011 hyphens failed to match, #44).
+_PLAIN = str.maketrans(
+    {**dict.fromkeys(range(0x2010, 0x2016), "-"), 0x2212: "-"}
+    | {0x2018: "'", 0x2019: "'", 0x201C: '"', 0x201D: '"'}
+)
 
 
 @dataclass(frozen=True)
@@ -240,9 +246,9 @@ def _clean(text: object, limit: int) -> str:
 
 def _squash(text: str) -> str:
     """For comparing quotes: case, whitespace (JSON may be minified) and Markdown's
-    ``*`` and backticks don't count."""
+    ``*`` and backticks don't count, and typographic dashes and quotes equal plain ones."""
 
-    return _UNCOMPARED.sub("", text).lower()
+    return _UNCOMPARED.sub("", text.translate(_PLAIN)).lower()
 
 
 def locate(quote: str, source: str, sources: dict[str, str]) -> str | None:

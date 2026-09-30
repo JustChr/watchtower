@@ -45,6 +45,9 @@ _LOGGER = logging.getLogger(__name__)
 MAX_RESULT = 6000  # characters of one tool result
 MAX_LINES = 200  # lines one read returns
 MAX_HITS = 40
+PER_FILE = 5  # hits shown per file when there are too many
+MAX_NEAR = 10  # hits shown for a near miss
+MIN_NEAR = 4  # shortest name tried for a near miss
 MAX_LISTED = 200
 MAX_LINE = 300  # a longer line is shown in part
 SNIPPET = 120  # characters shown either side of a hit in a long line
@@ -68,6 +71,10 @@ Before your final answer, investigate with the tools. {code}
   each step for the author's case (how it is requested or subscribed to, fetched or
   refreshed, converted, stored, restored after a restart, shown) and check each one
   against the code and the attached files.
+- Start from what the author did: each button, menu, flow or command they name
+  ("Add device", "Discover vehicles", a restart) is an entry point. Find its code and
+  follow what it does, including what it removes or resets, before theorising about
+  the symptom's own parts.
 - Keep more than one explanation open until the code or the files rule it out; the
   first plausible piece of code is often not the cause.
 - Look up the fields involved in the attached files (search_attachment) instead of
@@ -330,20 +337,32 @@ class Workspace:
         folder = self._inside(folder_arg)
         if folder is None or not folder.exists():
             return f"No folder {folder_arg!r} in the code."
-        hits, total = [], 0
+        per_file = self._scan(folder, text)
+        if not per_file:
+            for near in _prefixes(text):  # a name guessed slightly wrong
+                per_file = self._scan(folder, near, remember=False)
+                if per_file:
+                    return f"No line contains «{text}». Nearest, «{near}»:\n" + _hits(
+                        per_file, MAX_NEAR
+                    )
+            return f"No line contains «{text}»."
+        return _hits(per_file, MAX_HITS)
+
+    def _scan(self, folder: Path, text: str, remember: bool = True) -> dict[str, list[str]]:
+        """The lines containing ``text``, per file (in file order)."""
+
+        per_file: dict[str, list[str]] = {}
         for path in self._code_files(folder) if folder.is_dir() else [folder]:
             content = _text_file(path)
             if content is None:
                 continue
             found = _find(content, text)
-            if found:
+            if not found:
+                continue
+            if remember:
                 self.read[self._rel(path)] = content
-            total += len(found)
-            hits += [f"{self._rel(path)}:{n}: {line}" for n, line in found]
-        if not hits:
-            return f"No line contains «{text}»."
-        more = f"\n({total - MAX_HITS} more hits not shown)" if total > MAX_HITS else ""
-        return "\n".join(hits[:MAX_HITS]) + more
+            per_file[self._rel(path)] = [f"{self._rel(path)}:{n}: {line}" for n, line in found]
+        return per_file
 
     def _read_code(self, args: dict) -> str:
         path_arg = _arg(args.get("path"))
@@ -494,6 +513,30 @@ def _whole(thread: dict) -> str:
     """Every word of a thread: what quotes from it are checked against."""
 
     return "\n\n".join([thread["title"], thread["body"], *(c["body"] for c in thread["comments"])])
+
+
+def _prefixes(text: str) -> list[str]:
+    """The search text cut back at its ``_``/``.``/space joints, longest first, so a
+    slightly wrong name (``async_remove_entry`` for ``async_remove``) still finds
+    something."""
+
+    cuts = [m.start() for m in re.finditer(r"[_. ]", text.strip())]
+    stripped = text.strip()
+    return [stripped[:at] for at in reversed(cuts) if len(stripped[:at]) >= MIN_NEAR]
+
+
+def _hits(per_file: dict[str, list[str]], limit: int) -> str:
+    """Search hits: all of them if they fit, else a few per file (so a file late in
+    the walk isn't crowded out by early ones), and how many each file has."""
+
+    total = sum(len(lines) for lines in per_file.values())
+    if total <= limit:
+        return "\n".join(line for lines in per_file.values() for line in lines)
+    shown = [line for lines in per_file.values() for line in lines[:PER_FILE]][:limit]
+    counts = ", ".join(f"{path} ({len(lines)})" for path, lines in list(per_file.items())[:30])
+    return (
+        "\n".join(shown) + f"\n({total - len(shown)} more hits not shown; hits per file: {counts})"
+    )
 
 
 def _cap(text: str) -> str:

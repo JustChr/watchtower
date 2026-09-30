@@ -234,6 +234,13 @@ def test_a_quote_is_located_ignoring_case_and_whitespace():
     assert analysis.locate("  ", "thread", sources) is None
 
 
+def test_a_quote_with_typographic_dashes_and_quotes_is_located():
+    # #44: the release line had U+2011 hyphens; the model wrote them differently.
+    sources = {"releases": "released 2026‑09-27, it’s “beta”"}
+    assert analysis.locate('released 2026-09-27, it\'s "beta"', "releases", sources) == "releases"
+    assert analysis.locate("released 2026–09‒27", "releases", sources) == "releases"
+
+
 def test_a_quote_without_the_markdown_marks_still_checks_out():
     # #160: the message said "**A or B?**" and `as_local`; the model quoted it plain.
     newest = "Two shapes. **A or B?** It uses `dt_util.as_local` today."

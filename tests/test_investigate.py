@@ -127,8 +127,31 @@ def test_long_lines_and_many_hits_are_cut(hist, code):
     first = result.splitlines()[0]
     assert first.startswith("big.json:1: …x") and first.endswith("y…")
     assert len(first) < 2 * investigate.SNIPPET + 30
-    assert result.endswith(f"({101 - investigate.MAX_HITS} more hits not shown)")
+    assert result.endswith(
+        f"({101 - investigate.PER_FILE} more hits not shown; hits per file: big.json (101))"
+    )
     assert len(ws.run("read_code", {"path": "big.json"})) <= investigate.MAX_RESULT + 60
+
+
+def test_many_hits_show_every_file_and_a_near_miss_finds_the_name(hist, code):
+    # #44: "Add device" hit early files first and config_flow.py was cut off; the
+    # model then searched async_remove_entry, which the code doesn't have (async_remove).
+    (code / "a.py").write_text("add device\n" * 60)
+    (code / "z_flow.py").write_text(
+        "add device\nawait hass.config_entries.async_remove(entry.entry_id)\n"
+    )
+    ws = workspace(hist, code)
+    result = ws.run("search_code", {"text": "add device"})
+    assert "z_flow.py:1: add device" in result  # not crowded out by a.py
+    assert "a.py (60), z_flow.py (1)" in result
+    ws.read.clear()
+    near = ws.run("search_code", {"text": "config_entries.async_remove_entry"})
+    assert near.startswith("No line contains «config_entries.async_remove_entry». Nearest,")
+    assert "z_flow.py:2:" in near
+    assert ws.read == {}  # a near miss isn't something it has read
+    assert ws.run("search_code", {"text": "zzz_nothing_here"}) == (
+        "No line contains «zzz_nothing_here»."
+    )
 
 
 def test_read_code_numbers_and_clamps_lines(hist, code):
@@ -261,6 +284,16 @@ def test_the_draft_asks_to_investigate_first(agent_cfg, store, hist, tmp_path, m
     assert model.acts[0][1]["content"].endswith(investigate.FIRST_ASK)
     ((_, final),) = [m for k, m in model.calls if k == "assess"]
     assert investigate.FIRST_ASK not in final["content"]
+
+
+def test_the_draft_starts_from_what_the_author_did(agent_cfg, store, hist, tmp_path, model):
+    # #44: "Add device" removed the entry and its history; the model only searched the
+    # symptom's nouns and never opened the config flow.
+    put_issue(hist)
+    add_draft(store)
+    drafts.generate(agent_cfg, store.claim_draft(), hist, tmp_path)
+    system = model.acts[0][0]["content"]
+    assert "Start from what the author did" in system and "entry point" in system
 
 
 def test_the_loop_is_bounded(agent_cfg, hist, code, model):
