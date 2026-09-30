@@ -68,9 +68,11 @@ class Event:
 
     @property
     def thread_kind(self) -> str | None:
-        """Where a reply to this goes: ``issue`` or ``discussion`` (``None``: PRs)."""
+        """Where a reply to this goes: ``issue``, ``discussion`` or ``pr`` (a review);
+        ``None`` for a comment on a PR."""
 
         return {
+            "pr": "pr",
             "issue": "issue",
             "issue_comment": "issue",
             "discussion": "discussion",

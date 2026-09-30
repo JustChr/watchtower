@@ -37,6 +37,7 @@ class Config:
     brief_betas: bool
     draft_replies: bool
     app_id: str  # the GitHub App that posts approved replies; "" = posting off
+    review_prs: bool = True  # draft a review of every stranger's new pull request
     web_port: int = 8080
     web_hosts: tuple[str, ...] = ()  # host names the web UI answers to, besides IPs
 
@@ -45,6 +46,12 @@ class Config:
         """Draft replies are on: asked for, and there's a model to write them."""
 
         return self.draft_replies and bool(self.agent_model)
+
+    @property
+    def reviews(self) -> bool:
+        """PR reviews are on: drafts are, and the config asks for them."""
+
+        return self.drafts and self.review_prs
 
 
 def is_cloud_model(name: str) -> bool:
@@ -113,6 +120,7 @@ def parse(text: str) -> Config:
         brief_betas=bool(llm.get("brief_betas", True)),
         draft_replies=bool(llm.get("draft_replies", True)),
         app_id=app_id,
+        review_prs=bool(llm.get("review_prs", True)),
         web_port=int(web.get("port", 8080)),
         web_hosts=tuple(str(h).strip().lower() for h in web.get("hosts", ())),
     )

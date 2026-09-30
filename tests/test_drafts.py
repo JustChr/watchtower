@@ -255,11 +255,11 @@ def test_a_stranger_needing_a_reply_gets_a_draft_on_a_fresh_thread(
     [
         ({"association": "OWNER"}, True),  # a maintainer
         ({"author": "renovate[bot]"}, True),
-        ({"kind": "pr"}, True),  # PRs: phase 3
+        ({"kind": "pr_comment"}, True),  # a comment on a PR: nothing to reply to
         ({"kind": "issue_comment"}, False),  # a comment with nothing to answer
     ],
 )
-def test_no_draft_for_maintainers_bots_prs_or_no_reply_needed(
+def test_no_draft_for_maintainers_bots_pr_comments_or_no_reply_needed(
     agent_cfg, store, hist, monkeypatch, changes, summary_says_reply
 ):
     monkeypatch.setattr(llm, "summarize", needs(summary_says_reply))

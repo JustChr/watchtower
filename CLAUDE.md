@@ -13,8 +13,8 @@ end-to-end locally.
 ## Layout
 
 - `watchtower/` — the package. Standard library only, except `cryptography`
-  (RS256 for the GitHub App JWT); keep it that way unless a dependency clearly
-  earns its place.
+  (RS256 for the GitHub App JWT) and `PyYAML` (`gates.py`: CI workflows); keep
+  it that way unless a dependency clearly earns its place.
   - `watcher.py` — poll loop; holds the GitHub **read-only** token; never
     calls the model: queues `job`s (summary, brief, eval) for the worker, and
     fetches what they need (a draft's thread, attachments, code at a release).
@@ -38,6 +38,31 @@ end-to-end locally.
     (sent after the draft; copy button in the web UI) with the findings
     framed as data; a confirmed issue gets the `bug` label on ✅ (the
     "Post only" button leaves it off).
+  - `pr.py` + `reviews.py` — a stranger's new PR gets a **review draft** (a
+    `draft` of kind `pr`, same staged pipeline, Telegram approval, revise and
+    web UI). The watcher (`pr.fetch`) puts the PR's facts, per-file patches and
+    the code at its head commit under `/data/repos/.prs/<owner>/<name>/<n>/`;
+    the worker: facts computed by code (tests, docs, changelog, gate/CI/
+    dependency files, conflicts, linked issue) → investigation (`investigate`'s
+    reviewing mode: `list_changes`/`read_patch` + code tools) → assessment
+    (findings quote a patch/code line, code checks the quote and finds the
+    line itself) → review text (code appends the reviewed commit). The
+    project's rules come from the **default branch**, never from the PR's own
+    docs. Posted by the poster as one review with event `COMMENT` (never
+    approve/merge); this token asks for `pull_requests: write` only then.
+    Nothing here runs the PR's code (planned: a no-network `runner` service).
+  - `gates.py` — what "the checks" are for a repo, read from its own default
+    branch: `.github/workflows` `run:` steps of pull_request jobs (install
+    commands = setup, the rest = gates; third-party actions, secrets, network
+    or deploy steps are listed as not run), else conventions (pyproject,
+    package.json, Makefile); `.watchtower/gates.toml` overrides. Plans only;
+    runs nothing.
+  - `sandbox.py` — the runner protocol: the watcher writes a job (merged
+    tree + steps) under `/sandbox/jobs/<id>/`, the runner (no network, no
+    secrets, gVisor, one job per container, never `/data`) executes it with a
+    clean environment, per-step and total clocks, capped output, and writes
+    `result.json` only after sweeping every process the steps started. The
+    result is **untrusted**: `parse_result` accepts one fixed shape, sizes capped.
   - `poster.py` — the only GitHub writer: holds the App key (`github_app.py`),
     applies draft decisions, posts exactly the approved version; no model.
   - `web.py` — the web UI (stdlib `http.server`, JSON API) + `web/` (one

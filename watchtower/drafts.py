@@ -891,12 +891,31 @@ def revise(
     verdict = Verdict.from_json(draft.verdict) if draft.verdict else None
     context = brief.project_context(history, draft.repo, root)
     system = REVISE_SYSTEM + background(context, "")
+    prompt = revise_prompt(text, instruction, verdict, shown)
+    review = None
+    if draft.kind == "pr":  # the draft is a review: its assessment is the review's
+        from . import reviews  # reviews builds on this module
+
+        review = reviews.ReviewVerdict.from_json(draft.verdict)
+        system += (
+            "\n\nThis draft is the review of a pull request; the thread is the pull"
+            " request's description and conversation. Keep the closing line naming the"
+            " reviewed commit as it is."
+        )
+        prompt = "\n".join(
+            [
+                *_section("The assessment", reviews.assessment_text(review) if review else ""),
+                *_section("The pull request", shown),
+                *_section("The draft", text),
+                *_section("The maintainer's instruction", instruction),
+            ]
+        ).strip()
     try:
         content = llm.chat(
             cfg,
             cfg.agent_model,
             system,
-            revise_prompt(text, instruction, verdict, shown),
+            prompt,
             num_ctx=cfg.agent_num_ctx,
             timeout=cfg.agent_timeout,
             think=cfg.agent_think,
@@ -909,8 +928,9 @@ def revise(
     if parsed is None:
         return None
     reply, note = parsed
-    if verdict and verdict.decision:
-        reply = name_decision(reply, verdict.decision.rstrip("."))
+    decision = verdict.decision if verdict else review.decision if review else ""
+    if decision:
+        reply = name_decision(reply, decision.rstrip("."))
     return reply, note
 
 

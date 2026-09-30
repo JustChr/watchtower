@@ -58,4 +58,5 @@ agent_think = "high"              # reasoning effort: low / medium / high; "" = 
 agent_steps = 20                  # before judging an issue: rounds of looking things up
                                   # (code at the author's version, attached files, history); 0 = off
 brief_betas = true                # a new beta release gets a new brief too; false = stable only
+review_prs = true                 # draft a review of every stranger's new pull request
 draft_replies = true              # draft a reply when an issue/discussion (or a comment) needs one

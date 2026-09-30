@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
-from . import drafts, handoff, render, snapshot
+from . import drafts, handoff, render, reviews, snapshot
 from .analysis import CATEGORIES, Verdict
 from .config import DATA_DIR, Config
 from .history import History
@@ -179,9 +179,12 @@ class Data:
             (limit,),
         )
         for row in rows:
-            verdict = Verdict.from_json(row.pop("verdict"))
-            row["category"] = verdict.category if verdict else ""
-            row["confidence"] = verdict.confidence if verdict else ""
+            text = row.pop("verdict")
+            verdict, review = Verdict.from_json(text), reviews.ReviewVerdict.from_json(text)
+            row["category"] = (
+                verdict.category if verdict else review.recommendation if review else ""
+            )
+            row["confidence"] = (verdict or review).confidence if verdict or review else ""
         return rows
 
     def draft(self, draft_id: int) -> dict | None:
@@ -189,7 +192,8 @@ class Data:
         if not found:
             return None
         draft = found[0]
-        verdict = Verdict.from_json(draft.pop("verdict"))
+        text = draft.pop("verdict")
+        verdict, review = Verdict.from_json(text), reviews.ReviewVerdict.from_json(text)
         versions = self._rows(
             self.store.db,
             "SELECT id, text, author, created FROM draft_version WHERE draft = ? ORDER BY id",
@@ -212,7 +216,7 @@ class Data:
         found = self.store.draft(draft_id)
         return {
             **draft,
-            "verdict": _verdict(verdict),
+            "verdict": _review(review) if review else _verdict(verdict),
             "handoff": _handoff(found, verdict),
             "versions": versions,
             "decisions": sorted(decisions, key=lambda d: d["id"]),
@@ -318,6 +322,28 @@ def _handoff(draft, verdict: Verdict | None) -> dict | None:
         "doubts": handoff.doubts(verdict),
         "label": handoff.label(draft),
         "prompt": handoff.prompt(draft, verdict),
+    }
+
+
+def _review(v: reviews.ReviewVerdict) -> dict:
+    """A pull request's review assessment; ``review`` tells the page which sheet to draw."""
+
+    return {
+        "review": True,
+        "label": render.RECOMMENDATIONS.get(v.recommendation, v.recommendation),
+        "confidence": v.confidence,
+        "summary": v.summary,
+        "facts": list(v.facts),
+        "findings": [
+            {**vars(f), "where": f.where, "mark": render.SEVERITIES.get(f.severity, "")}
+            for f in v.findings
+        ],
+        "missing": list(v.missing),
+        "decision": v.decision,
+        "attempts": v.attempts,
+        "looked_at": list(v.looked_at),
+        "judged_at": v.judged_at,
+        "commit": v.commit,
     }
 
 

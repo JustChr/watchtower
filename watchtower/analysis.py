@@ -222,6 +222,8 @@ class Verdict:
         if not text:
             return None
         data = json.loads(text)
+        if "recommendation" in data:  # a pull request's review (``reviews.ReviewVerdict``)
+            return None
         data["evidence"] = tuple(Evidence(**e) for e in data["evidence"])
         data["missing"] = tuple(data["missing"])
         data["asks"] = tuple(Ask(**a) for a in data.get("asks", ()))  # absent in older rows

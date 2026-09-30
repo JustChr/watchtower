@@ -29,7 +29,17 @@ KIND_LABELS = {
     "docs": "📖 docs",
     "other": "📌 other",
 }
+# A pull request's review (``reviews``): the model's recommendation and findings.
+RECOMMENDATIONS = {
+    "merge": "✅ looks mergeable",
+    "changes": "✏️ needs changes",
+    "close": "🚫 shouldn't be merged",
+    "unsure": "❔ can't tell",
+}
+SEVERITIES = {"blocker": "🛑", "should_fix": "⚠️", "nit": "💬"}
 SNIPPET = 280
+# Room for a review's findings in its assessment message, escaped.
+REVIEW_ROOM = 3000
 
 _HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
 _HTML_TAG = re.compile(r"<[a-zA-Z/][^>]*>")
@@ -89,7 +99,8 @@ def draft(d: Draft, version: Version, error: str = "", lead: str = "", label: st
     also adds to the thread, said so the approval covers it."""
 
     repo = d.repo.split("/", 1)[1]
-    head = f"<b>✍️ Draft reply #{d.number}</b> · {escape(repo)}"
+    what = "review" if d.kind == "pr" else "reply"
+    head = f"<b>✍️ Draft {what} #{d.number}</b> · {escape(repo)}"
     if version.author == "user":
         head += f" · v{version.number}, your edit"
     elif version.author == "revised":
@@ -103,6 +114,8 @@ def draft(d: Draft, version: Version, error: str = "", lead: str = "", label: st
         lines.append(f"📎 {fit(d.attachments, 300)}")
     if version.author == "model" and d.note:
         lines.append(f"🤖 <i>{fit(d.note, 300)}</i>")
+    if d.kind == "pr":
+        lines.append("<i>✅ Post posts this as a comment review: it never approves or merges.</i>")
     if label:
         lines.append(f"🏷 ✅ Post + label also labels the issue <b>{escape(label)}</b>.")
     lines += [
@@ -150,8 +163,47 @@ def verdict(d: Draft, v: Verdict) -> str:
     return "\n".join(lines)
 
 
+def review_verdict(d: Draft, v) -> str:
+    """A PR's assessment before its review text (``reviews.ReviewVerdict``); the
+    findings are shown while they fit in one message."""
+
+    repo = d.repo.split("/", 1)[1]
+    lines = [
+        f"<b>🧭 Review of #{d.number}</b> · {escape(repo)}",
+        fit(d.title, 150),
+        f"<b>{RECOMMENDATIONS[v.recommendation]}</b> · confidence: {v.confidence}",
+        f"<i>{fit(v.summary, 400)}</i>",
+    ]
+    if v.facts:
+        lines.append("<b>Checked</b>")
+        lines += [f"• {fit(f, 140)}" for f in v.facts[:6]]
+    if v.findings:
+        lines.append("<b>Findings</b>")
+        used = sum(len(x) + 1 for x in lines)
+        for shown, f in enumerate(v.findings):
+            mark = "" if f.verified else "⚠️ not found: "
+            item = (
+                f"{SEVERITIES[f.severity]} {mark}{fit(f.where, 70)}: «{fit(f.quote, 80)}»"
+                f"\n  {fit(f.point, 160)}"
+            )
+            if used + len(item) > REVIEW_ROOM:  # Telegram allows 4096 in all
+                lines.append(f"…and {len(v.findings) - shown} more (the web UI has them all)")
+                break
+            lines.append(item)
+            used += len(item) + 1
+    if v.decision:
+        lines.append(f"⚖️ <b>Yours to decide</b>: {fit(v.decision, 200)}")
+    if v.missing:
+        lines.append("<b>Missing</b>")
+        lines += [f"• {fit(m, 110)}" for m in v.missing]
+    if v.looked_at:
+        lines.append(f"🔎 <i>{len(v.looked_at)} lookups; judged against {fit(v.judged_at, 80)}</i>")
+    return "\n".join(lines)
+
+
 def posted(d: Draft, label: str = "") -> str:
-    text = f"✅ <b>Posted</b> the reply to #{d.number} · {escape(d.repo.split('/', 1)[1])}"
+    what = "review of" if d.kind == "pr" else "reply to"
+    text = f"✅ <b>Posted</b> the {what} #{d.number} · {escape(d.repo.split('/', 1)[1])}"
     return text + (f" · 🏷 {escape(label)}" if label else "")
 
 

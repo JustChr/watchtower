@@ -4,8 +4,9 @@ FROM python:3.14-slim
 
 RUN useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin watchtower
 
-# The one dependency: RS256 for the GitHub App's JWT (poster only).
-RUN pip install --no-cache-dir "cryptography==50.0.1"
+# cryptography: RS256 for the GitHub App's JWT (poster only). PyYAML: reading a repo's
+# CI workflows to learn its checks (``gates``); safe_load only, maintainers' files only.
+RUN pip install --no-cache-dir "cryptography==50.0.1" "PyYAML==6.0.3"
 
 WORKDIR /app
 COPY watchtower/ /app/watchtower/

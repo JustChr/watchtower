@@ -10,7 +10,7 @@ import logging
 import time
 from pathlib import Path
 
-from . import attachments, brief, drafts, render, snapshot
+from . import attachments, brief, drafts, pr, render, snapshot
 from .config import DATA_DIR, Config, read_secret
 from .events import Event, Source, poll_repo
 from .github import GitHub, GitHubError, RateLimited
@@ -90,6 +90,14 @@ def prepare(
         _LOGGER.warning("%s#%d: thread refresh failed: %s", *label, err)
         return False
     thread = history.thread(draft.repo, draft.number)
+    if draft.kind == "pr":  # a review reads the diff and the code at the PR's head
+        if root is not None:
+            try:
+                pr.fetch(source, draft.repo, draft.number, root)
+            except Exception as err:  # noqa: BLE001 -- tried again next poll
+                _LOGGER.warning("%s#%d: pull request fetch failed: %s", *label, err)
+                return False
+        return True
     if files is not None:
         try:
             attachments.download(thread, draft.repo, files)

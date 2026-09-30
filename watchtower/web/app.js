@@ -704,8 +704,45 @@ function passBar(calls) {
   );
 }
 
+// A pull request's review: what it does, what code checked, and each finding.
+function reviewSheet(v) {
+  return h(
+    "div",
+    { class: "sheet" },
+    h("p", {}, h("strong", {}, v.label), ` · confidence ${v.confidence} · ${count(v.attempts, "attempt")}`),
+    h("p", {}, v.summary),
+    v.facts.length ? [h("h3", {}, "Checked by code"), h("ul", {}, v.facts.map((f) => h("li", {}, f)))] : null,
+    v.decision ? [h("h3", {}, "Yours to decide"), h("p", {}, v.decision)] : null,
+    v.findings.length
+      ? [
+          h("h3", {}, "Findings"),
+          h(
+            "ul",
+            { class: "evidence" },
+            v.findings.map((f) =>
+              h(
+                "li",
+                {},
+                `${f.mark} `,
+                f.verified ? h("span", { class: "ok" }, "✓ checked ") : h("span", { class: "warn" }, "⚠ quote not found "),
+                h("span", { class: "muted" }, f.where, ": "),
+                h("q", {}, f.quote),
+                h("div", {}, f.point),
+                f.fix ? h("div", { class: "muted" }, `Fix: ${f.fix}`) : null,
+              ),
+            ),
+          ),
+        ]
+      : null,
+    v.missing.length ? [h("h3", {}, "Still missing"), h("ul", {}, v.missing.map((m) => h("li", {}, m)))] : null,
+    v.judged_at ? h("p", { class: "small muted" }, `Judged against ${v.judged_at}.`) : null,
+    v.looked_at.length ? [h("h3", {}, `Looked up (${v.looked_at.length})`), h("ol", {}, v.looked_at.map((step) => h("li", {}, step)))] : null,
+  );
+}
+
 function assessment(v) {
   if (!v) return h("p", { class: "muted" }, "Not assessed yet.");
+  if (v.review) return reviewSheet(v);
   return h(
     "div",
     { class: "sheet" },

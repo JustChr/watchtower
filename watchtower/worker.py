@@ -20,7 +20,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import brief, drafts, evaluate, llm, render, snapshot
+from . import brief, drafts, evaluate, llm, render, reviews, snapshot
 from .analysis import Verdict
 from .config import DATA_DIR, Config
 from .events import Event
@@ -34,7 +34,7 @@ IDLE_SECONDS = 5
 PRUNE_SECONDS = 3600  # how often old model calls leave the trace
 
 # New threads: every one from a stranger gets a draft, whatever the summary says.
-OPENING_KINDS = frozenset({"issue", "discussion"})
+OPENING_KINDS = frozenset({"issue", "discussion", "pr"})
 
 
 class Worker:
@@ -163,15 +163,21 @@ class Worker:
         try:
             with self.about(f"draft:{draft.id}"):
                 self.between("starting")
-                result = drafts.generate(
-                    self.cfg,
-                    draft,
-                    self.history,
-                    self.root,
-                    self.files,
-                    beat=self.between,
-                    stages=StoredStages(store, draft),
-                )
+                stages = StoredStages(store, draft)
+                if draft.kind == "pr":
+                    result = reviews.generate(
+                        self.cfg, draft, self.history, self.root, beat=self.between, stages=stages
+                    )
+                else:
+                    result = drafts.generate(
+                        self.cfg,
+                        draft,
+                        self.history,
+                        self.root,
+                        self.files,
+                        beat=self.between,
+                        stages=stages,
+                    )
         except drafts.Unfit as err:
             result, why = None, f": {err}"
         finally:
@@ -300,10 +306,14 @@ class StoredStages(drafts.Stages):
     def put(self, name: str, data: dict) -> None:
         message = None
         if name == drafts.ASSESSMENT:
-            verdict = Verdict.from_json(data["verdict"])
+            if self.draft.kind == "pr":
+                verdict = reviews.ReviewVerdict.from_json(data["verdict"])
+                text = render.review_verdict(self.draft, verdict)
+            else:
+                text = render.verdict(self.draft, Verdict.from_json(data["verdict"]))
             message = {
                 "topic": self.draft.topic,
-                "text": render.verdict(self.draft, verdict),
+                "text": text,
                 "url": self.draft.url,
                 "silent": True,
             }
@@ -318,6 +328,8 @@ def wants_draft(event: Event, summary: llm.Summary | None, cfg: Config) -> bool:
     reply): the assessment judges it, and the user can reject the draft."""
 
     opening = event.kind in OPENING_KINDS
+    if event.kind == "pr" and not cfg.reviews:
+        return False
     return (
         cfg.drafts
         and (opening or (summary is not None and summary.needs_reply))

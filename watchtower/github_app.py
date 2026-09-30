@@ -24,6 +24,9 @@ from .store import Draft
 # Renew an installation token this long before it expires (seconds).
 TOKEN_MARGIN = 300
 PERMISSIONS = {"issues": "write", "discussions": "write"}
+# A PR's review needs its own permission: asked for only then, so an App that wasn't
+# granted it still posts everything else.
+REVIEW_PERMISSIONS = {"pull_requests": "write"}
 
 DISCUSSION_ID = """
 query($owner: String!, $name: String!, $number: Int!) {
@@ -70,7 +73,7 @@ class App:
         self._issuer: int | str = int(app_id) if app_id.isdigit() else app_id
         self._connect = connect
         self._clock = clock
-        self._tokens: dict[str, tuple[str, float]] = {}
+        self._tokens: dict[tuple, tuple[str, float]] = {}
 
     def jwt(self) -> str:
         now = int(self._clock())
@@ -85,20 +88,22 @@ class App:
 
         return self._connect(self.jwt()).get_json("/app")["slug"]
 
-    def token(self, repo: str) -> str:
+    def token(self, repo: str, permissions: dict[str, str] | None = None) -> str:
         """An installation token for ``repo`` only, reused until shortly before it expires."""
 
-        cached = self._tokens.get(repo)
+        permissions = permissions or PERMISSIONS
+        key = (repo, tuple(sorted(permissions.items())))
+        cached = self._tokens.get(key)
         if cached and cached[1] - TOKEN_MARGIN > self._clock():
             return cached[0]
         app = self._connect(self.jwt())
         installation = app.get_json(f"/repos/{repo}/installation")["id"]
         data = app.post_json(
             f"/app/installations/{int(installation)}/access_tokens",
-            {"repositories": [repo.split("/", 1)[1]], "permissions": PERMISSIONS},
+            {"repositories": [repo.split("/", 1)[1]], "permissions": permissions},
         )
         expires = calendar.timegm(time.strptime(data["expires_at"], "%Y-%m-%dT%H:%M:%SZ"))
-        self._tokens[repo] = (data["token"], expires)
+        self._tokens[key] = (data["token"], expires)
         return data["token"]
 
     def post(self, draft: Draft, body: str) -> str:
@@ -109,7 +114,10 @@ class App:
         """
 
         try:
-            client = self._connect(self.token(draft.repo))
+            if draft.kind == "pr":
+                client = self._connect(self.token(draft.repo, REVIEW_PERMISSIONS))
+            else:
+                client = self._connect(self.token(draft.repo))
             discussion = None
             if draft.kind == "discussion":
                 owner, name = draft.repo.split("/")
@@ -125,6 +133,9 @@ class App:
             variables = {"discussion": discussion, "body": body, "replyTo": draft.reply_to or None}
             data = client.graphql(ADD_DISCUSSION_COMMENT, variables)
             return data["addDiscussionComment"]["comment"]["url"]
+        if draft.kind == "pr":  # a comment review: never an approval or a request for changes
+            path = f"/repos/{draft.repo}/pulls/{draft.number}/reviews"
+            return client.post_json(path, {"body": body, "event": "COMMENT"})["html_url"]
         path = f"/repos/{draft.repo}/issues/{draft.number}/comments"
         return client.post_json(path, {"body": body})["html_url"]
 
