@@ -19,7 +19,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
-      - run: python -m pip install pytest ruff "cryptography==50.0.1"
+      - run: python -m pip install pytest ruff "cryptography==50.0.1" "PyYAML==6.0.3"
       - run: python -m ruff check . && python -m ruff format --check .
       - run: python -m pytest
 
