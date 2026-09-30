@@ -120,6 +120,7 @@ end-to-end locally.
 ```
 python -m pytest
 python -m ruff check . && python -m ruff format --check .
+python scripts/dev.py check|sub|ci|ship|clean|status   # the session toolset, see its docstring
 ```
 
 Python 3.14.
